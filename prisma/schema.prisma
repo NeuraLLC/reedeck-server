@@ -1,0 +1,366 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Organization {
+  id             String   @id @default(uuid())
+  name           String
+  slug           String   @unique
+  avatarUrl      String?  @map("avatar_url")
+  teamSize       String?  @map("team_size")
+  subscriptionId String?  @map("subscription_id")
+  settings       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  members      OrganizationMember[]
+  subscription Subscription?        @relation(fields: [subscriptionId], references: [id])
+
+  @@map("organizations")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String?  @map("password_hash")
+  firstName     String?  @map("first_name")
+  lastName      String?  @map("last_name")
+  avatarUrl     String?  @map("avatar_url")
+  emailVerified Boolean  @default(false) @map("email_verified")
+  isSuperAdmin  Boolean  @default(false) @map("is_super_admin")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  organizationMembers OrganizationMember[]
+  invitationsSent     TeammateInvitation[]
+  ticketMessages      TicketMessage[]
+
+  @@map("users")
+}
+
+model OrganizationMember {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  userId         String    @map("user_id")
+  role           String    @default("member")
+  status         String    @default("active")
+  lastActiveAt   DateTime? @map("last_active_at")
+  joinedAt       DateTime  @default(now()) @map("joined_at")
+
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("organization_members")
+}
+
+model TeammateInvitation {
+  id             String    @id @default(uuid())
+  email          String
+  organizationId String    @map("organization_id")
+  invitedBy      String    @map("invited_by")
+  role           String    @default("member")
+  token          String    @unique
+  status         String    @default("pending")
+  expiresAt      DateTime  @map("expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  inviter User @relation(fields: [invitedBy], references: [id])
+
+  @@map("teammate_invitations")
+}
+
+model SubscriptionPlan {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  priceMonthly    Decimal  @map("price_monthly") @db.Decimal(10, 2)
+  priceAnnual     Decimal? @map("price_annual") @db.Decimal(10, 2)
+  channelsLimit   Int      @map("channels_limit")
+  messagesLimit   Int      @map("messages_limit")
+  formsLimit      Int      @map("forms_limit")
+  aiAgentsLimit   Int      @map("ai_agents_limit")
+  teammatesLimit  Int      @map("teammates_limit")
+  chatHistoryDays Int      @map("chat_history_days")
+  features        Json     @default("{}")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  salesLeads    SalesLead[]
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id                   String   @id @default(uuid())
+  planId               String   @map("plan_id")
+  stripeCustomerId     String?  @map("stripe_customer_id")
+  stripeSubscriptionId String?  @map("stripe_subscription_id")
+  status               String   @default("active")
+  currentPeriodStart   DateTime @map("current_period_start")
+  currentPeriodEnd     DateTime @map("current_period_end")
+  cancelAtPeriodEnd    Boolean  @default(false) @map("cancel_at_period_end")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  plan           SubscriptionPlan   @relation(fields: [planId], references: [id])
+  organizations  Organization[]
+  usageTracking  UsageTracking[]
+
+  @@map("subscriptions")
+}
+
+model UsageTracking {
+  id             String   @id @default(uuid())
+  subscriptionId String   @map("subscription_id")
+  period         String
+  channelsUsed   Int      @default(0) @map("channels_used")
+  messagesUsed   Int      @default(0) @map("messages_used")
+  formsUsed      Int      @default(0) @map("forms_used")
+  aiAgentsUsed   Int      @default(0) @map("ai_agents_used")
+  teammatesUsed  Int      @default(0) @map("teammates_used")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@unique([subscriptionId, period], name: "subscriptionId_period")
+  @@map("usage_tracking")
+}
+
+model Ticket {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  sourceId       String?   @map("source_id")
+  customerName   String    @map("customer_name")
+  customerEmail  String    @map("customer_email")
+  subject        String
+  status         String    @default("open")
+  priority       String    @default("medium")
+  assignedTo     String?   @map("assigned_to")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  closedAt       DateTime? @map("closed_at")
+
+  messages TicketMessage[]
+  tags     TicketTag[]
+
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id         String   @id @default(uuid())
+  ticketId   String   @map("ticket_id")
+  userId     String?  @map("user_id")
+  senderType String   @map("sender_type")
+  content    String
+  isInternal Boolean  @default(false) @map("is_internal")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  user   User?  @relation(fields: [userId], references: [id])
+
+  @@map("ticket_messages")
+}
+
+model TicketTag {
+  id        String   @id @default(uuid())
+  ticketId  String   @map("ticket_id")
+  tag       String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@map("ticket_tags")
+}
+
+model Form {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  fields         Json
+  settings       Json     @default("{}")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  submissions FormSubmission[]
+
+  @@map("forms")
+}
+
+model FormSubmission {
+  id        String   @id @default(uuid())
+  formId    String   @map("form_id")
+  data      Json
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  form Form @relation(fields: [formId], references: [id])
+
+  @@map("form_submissions")
+}
+
+model AiAgent {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  systemPrompt   String   @map("system_prompt")
+  model          String   @default("gpt-4")
+  temperature    Float    @default(0.7)
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  sources       AgentSource[]
+  conversations AgentConversation[]
+
+  @@map("ai_agents")
+}
+
+model AgentSource {
+  id         String   @id @default(uuid())
+  agentId    String   @map("agent_id")
+  sourceType String   @map("source_type")
+  sourceId   String   @map("source_id")
+  content    String
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  agent      AiAgent           @relation(fields: [agentId], references: [id])
+  embeddings AgentEmbedding[]
+
+  @@map("agent_sources")
+}
+
+model AgentEmbedding {
+  id        String                     @id @default(uuid())
+  agentId   String                     @map("agent_id")
+  sourceId  String                     @map("source_id")
+  content   String
+  embedding Unsupported("vector(768)")
+  createdAt DateTime                   @default(now()) @map("created_at")
+
+  source AgentSource @relation(fields: [sourceId], references: [id])
+
+  @@map("agent_embeddings")
+}
+
+model AgentConversation {
+  id        String   @id @default(uuid())
+  agentId   String   @map("agent_id")
+  userId    String?  @map("user_id")
+  sessionId String?  @map("session_id")
+  title     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  agent    AiAgent         @relation(fields: [agentId], references: [id])
+  messages AgentMessage[]
+
+  @@map("agent_conversations")
+}
+
+model AgentMessage {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id])
+
+  @@map("agent_messages")
+}
+
+model DemoRequest {
+  id                String   @id @default(uuid())
+  firstName         String   @map("first_name")
+  lastName          String   @map("last_name")
+  email             String
+  organizationName  String   @map("organization_name")
+  teamSize          String?  @map("team_size")
+  useCase           String?  @map("use_case")
+  status            String   @default("submitted") // submitted, demo_booked, demo_completed, qualified, disqualified
+  demoBookedAt      DateTime? @map("demo_booked_at")
+  demoCompletedAt   DateTime? @map("demo_completed_at")
+  convertedUserId   String?   @map("converted_user_id")
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("demo_requests")
+}
+
+model SalesLead {
+  id                  String    @id @default(uuid())
+  demoRequestId       String    @unique @map("demo_request_id")
+  firstName           String    @map("first_name")
+  lastName            String    @map("last_name")
+  email               String
+  organizationName    String    @map("organization_name")
+  selectedPlanId      String?   @map("selected_plan_id")
+  seats               Int       @default(1)
+  annualValue         Decimal?  @map("annual_value") @db.Decimal(10, 2)
+  status              String    @default("qualified")
+  orderFormSentAt     DateTime? @map("order_form_sent_at")
+  orderFormSignedAt   DateTime? @map("order_form_signed_at")
+  invoiceSentAt       DateTime? @map("invoice_sent_at")
+  paymentReceivedAt   DateTime? @map("payment_received_at")
+  lostReason          String?   @map("lost_reason")
+  notes               String?
+  convertedOrgId      String?   @unique @map("converted_org_id")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  selectedPlan SubscriptionPlan? @relation(fields: [selectedPlanId], references: [id])
+  invoices     Invoice[]
+
+  @@map("sales_leads")
+}
+
+model Invoice {
+  id              String    @id @default(uuid())
+  salesLeadId     String    @map("sales_lead_id")
+  stripeInvoiceId String?   @unique @map("stripe_invoice_id")
+  invoiceNumber   String    @unique @map("invoice_number")
+  amount          Decimal   @db.Decimal(10, 2)
+  status          String    @default("draft")
+  dueDate         DateTime  @map("due_date")
+  paidAt          DateTime? @map("paid_at")
+  invoiceUrl      String?   @map("invoice_url")
+  paymentUrl      String?   @map("payment_url")
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  salesLead SalesLead @relation(fields: [salesLeadId], references: [id])
+
+  @@map("invoices")
+}
+
+model SourceConnection {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  sourceType     String    @map("source_type")
+  sourceId       String    @map("source_id")
+  accessToken    String?   @map("access_token")
+  refreshToken   String?   @map("refresh_token")
+  expiresAt      DateTime? @map("expires_at")
+  credentials    Json?
+  metadata       Json      @default("{}")
+  isActive       Boolean   @default(true) @map("is_active")
+  lastSyncAt     DateTime? @map("last_sync_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([organizationId, sourceType])
+  @@map("source_connections")
+}
