@@ -26,6 +26,8 @@
   "license": "MIT",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@prisma/adapter-pg": "^7.2.0",
+    "@prisma/client": "^7.2.0",
     "@supabase/supabase-js": "^2.89.0",
     "axios": "^1.13.2",
     "bcrypt": "^5.1.1",
@@ -41,13 +43,12 @@
     "jsonwebtoken": "^9.0.2",
     "openai": "^4.24.1",
     "pg": "^8.16.3",
+    "prisma": "^7.2.0",
     "resend": "^6.6.0",
     "stripe": "^14.10.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {
-    "@prisma/adapter-pg": "^7.2.0",
-    "@prisma/client": "^7.2.0",
     "@types/bcrypt": "^5.0.2",
     "@types/bull": "^4.10.0",
     "@types/cors": "^2.8.17",
@@ -57,7 +58,6 @@
     "@types/node": "^20.10.6",
     "@types/pg": "^8.10.0",
     "nodemon": "^3.0.2",
-    "prisma": "^7.2.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }
