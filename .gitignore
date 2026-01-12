@@ -8,3 +8,4 @@ coverage/
 *.swp
 *.swo
 .idea/
+logs/

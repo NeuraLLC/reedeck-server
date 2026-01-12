@@ -12,8 +12,10 @@
     "scheduler": "ts-node src/workers/scheduler.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "seed": "ts-node src/scripts/seedDatabase.ts"
+    "seed": "ts-node src/scripts/seedDatabase.ts",
+    "postinstall": "prisma generate"
   },
   "keywords": [
     "customer-support",
