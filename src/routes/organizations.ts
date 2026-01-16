@@ -255,8 +255,25 @@ router.delete('/members/:memberId', requireAdmin, async (req: AuthRequest, res: 
   }
 });
 
+// Get pending invitations
+router.get('/invitations/pending', async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const invitations = await prisma.teammateInvitation.findMany({
+      where: {
+        organizationId: req.organizationId,
+        status: 'pending',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json(invitations);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Resend invitation
-router.post('/members/:invitationId/resend-invite', requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/invitations/:invitationId/resend', requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const invitation = await prisma.teammateInvitation.findFirst({
       where: {
