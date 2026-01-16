@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import prisma from '../config/database';
 import logger from '../config/logger';
 
@@ -18,7 +19,7 @@ async function seedDatabase() {
       data: [
         {
           name: 'Starter',
-          priceMonthly: 50.00,
+          priceMonthly: 35.00,
           channelsLimit: 3,
           messagesLimit: 10000,
           formsLimit: 2,

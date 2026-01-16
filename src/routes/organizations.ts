@@ -44,33 +44,40 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
   }
 });
 
-router.use(attachOrganization);
-
-// Get current organization details
+// Get current organization details (user's primary org - no org ID header needed)
 router.get('/current', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const organization = await prisma.organization.findUnique({
-      where: { id: req.organizationId },
+    // Find user's first/primary organization membership
+    const membership = await prisma.organizationMember.findFirst({
+      where: {
+        userId: req.userId,
+        status: 'active',
+      },
+      orderBy: { joinedAt: 'asc' },
       include: {
-        subscription: {
+        organization: {
           include: {
-            plan: true,
-            usageTracking: {
-              where: {
-                period: new Date().toISOString().slice(0, 7),
+            subscription: {
+              include: {
+                plan: true,
+                usageTracking: {
+                  where: {
+                    period: new Date().toISOString().slice(0, 7),
+                  },
+                },
               },
             },
-          },
-        },
-        members: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                email: true,
-                firstName: true,
-                lastName: true,
-                avatarUrl: true,
+            members: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true,
+                    avatarUrl: true,
+                  },
+                },
               },
             },
           },
@@ -78,15 +85,20 @@ router.get('/current', async (req: AuthRequest, res: Response, next: NextFunctio
       },
     });
 
-    if (!organization) {
-      throw new AppError('Organization not found', 404);
+    if (!membership) {
+      throw new AppError('No organization found for user', 404);
     }
 
-    res.json(organization);
+    res.json({
+      ...membership.organization,
+      role: membership.role,
+    });
   } catch (error) {
     next(error);
   }
 });
+
+router.use(attachOrganization);
 
 // Update organization
 router.patch('/current', requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
