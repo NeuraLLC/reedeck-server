@@ -152,6 +152,37 @@ router.post('/members/invite', requireAdmin, async (req: AuthRequest, res: Respo
   try {
     const { email, role } = req.body;
 
+    // Check if invitation already exists
+    const existingInvitation = await prisma.teammateInvitation.findFirst({
+      where: {
+        email,
+        organizationId: req.organizationId,
+        status: 'pending',
+      },
+    });
+
+    if (existingInvitation) {
+      throw new AppError('Invitation already sent to this email', 400);
+    }
+
+    // Check if user is already a member
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      const existingMember = await prisma.organizationMember.findFirst({
+        where: {
+          userId: existingUser.id,
+          organizationId: req.organizationId,
+        },
+      });
+
+      if (existingMember) {
+        throw new AppError('User is already a member of this organization', 400);
+      }
+    }
+
     // Generate invite token
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
 

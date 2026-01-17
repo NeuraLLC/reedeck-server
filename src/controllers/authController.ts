@@ -115,3 +115,22 @@ export const resetPassword = async (
     next(error);
   }
 };
+
+export const refreshToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      throw new AppError('Refresh token is required', 400);
+    }
+
+    const result = await authService.refreshToken(refreshToken);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};

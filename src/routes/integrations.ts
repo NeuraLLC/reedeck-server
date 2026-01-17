@@ -100,21 +100,7 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
       },
     });
 
-    // Map platforms with connection status
-    const platforms = AVAILABLE_PLATFORMS.map((platform) => {
-      const connection = connectedIntegrations.find(
-        (conn) => conn.sourceType.toLowerCase() === platform.name.toLowerCase()
-      );
-
-      return {
-        ...platform,
-        connected: !!connection,
-        connectionId: connection?.id,
-        connectedAt: connection?.createdAt,
-      };
-    });
-
-    res.json({ platforms });
+    res.json(connectedIntegrations);
   } catch (error) {
     next(error);
   }

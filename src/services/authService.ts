@@ -195,6 +195,9 @@ export class AuthService {
         throw new AppError('User not found', 404);
       }
 
+      // Get the user's primary organization (first one they joined)
+      const primaryMembership = user.organizationMembers[0];
+
       return {
         access_token: signInData.session.access_token,
         refresh_token: signInData.session.refresh_token,
@@ -204,12 +207,11 @@ export class AuthService {
           firstName: user.firstName,
           lastName: user.lastName,
         },
-        organizations: user.organizationMembers.map((om) => ({
-          id: om.organization.id,
-          name: om.organization.name,
-          slug: om.organization.slug,
-          role: om.role,
-        })),
+        organization: primaryMembership ? {
+          id: primaryMembership.organization.id,
+          name: primaryMembership.organization.name,
+          slug: primaryMembership.organization.slug,
+        } : undefined,
       };
     } catch (error) {
       logger.error('Login error:', error);
@@ -356,6 +358,27 @@ export class AuthService {
       return { message: 'Password has been reset successfully' };
     } catch (error) {
       logger.error('Reset password error:', error);
+      throw error;
+    }
+  }
+
+  async refreshToken(refreshToken: string) {
+    try {
+      const { data, error } = await supabaseAdmin.auth.refreshSession({
+        refresh_token: refreshToken,
+      });
+
+      if (error || !data.session) {
+        logger.error('Refresh token error:', error);
+        throw new AppError('Invalid or expired refresh token', 401);
+      }
+
+      return {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+      };
+    } catch (error) {
+      logger.error('Refresh token error:', error);
       throw error;
     }
   }
