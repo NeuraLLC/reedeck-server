@@ -361,6 +361,41 @@ router.get('/dashboard', async (req: AuthRequest, res: Response, next: NextFunct
         customerSatisfaction: 4.8
      };
 
+    // 2b. Get Weekly Trend Data (last 4 weeks)
+    const trendData = [];
+    for (let i = 3; i >= 0; i--) {
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - (i * 7) - 6);
+      weekStart.setHours(0, 0, 0, 0);
+
+      const weekEnd = new Date();
+      weekEnd.setDate(weekEnd.getDate() - (i * 7));
+      weekEnd.setHours(23, 59, 59, 999);
+
+      const aiResolved = await prisma.ticket.count({
+        where: {
+          organizationId: req.organizationId,
+          createdAt: { gte: weekStart, lte: weekEnd },
+          status: 'closed',
+          assignedTo: null,
+        },
+      });
+
+      const humanAssignedWeek = await prisma.ticket.count({
+        where: {
+          organizationId: req.organizationId,
+          createdAt: { gte: weekStart, lte: weekEnd },
+          assignedTo: { not: null },
+        },
+      });
+
+      trendData.push({
+        date: `Week ${4 - i}`,
+        aiResolved,
+        humanAssigned: humanAssignedWeek,
+      });
+    }
+
     // 3. Get Recent Issues (if detection enabled)
     let recentIssues: any[] = [];
     if (settings.recurringIssueDetection) {
@@ -376,7 +411,8 @@ router.get('/dashboard', async (req: AuthRequest, res: Response, next: NextFunct
     res.json({
       settings,
       performance,
-      recentIssues
+      recentIssues,
+      trendData,
     });
   } catch (error) {
     next(error);
