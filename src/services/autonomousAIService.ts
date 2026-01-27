@@ -2,6 +2,8 @@ import prisma from '../config/database';
 import genAI from '../config/gemini';
 import logger from '../config/logger';
 import { AppError } from '../middleware/errorHandler';
+import { piiRedactor } from './piiRedactor';
+import { createAIProvider, AIProvider, AIProviderType } from './aiProviders';
 
 interface AutoResponseResult {
   shouldRespond: boolean;
@@ -9,6 +11,19 @@ interface AutoResponseResult {
   confidence: number;
   shouldAssignToAgent: boolean;
   assignedAgentId?: string;
+  piiRedacted?: boolean;
+  redactionCount?: number;
+}
+
+interface AIComplianceSettings {
+  piiRedactionEnabled: boolean;
+  aiProvider: AIProviderType;
+  azureOpenAIEndpoint?: string;
+  azureOpenAIDeployment?: string;
+  localModelEndpoint?: string;
+  localModelName?: string;
+  auditLoggingEnabled: boolean;
+  dataRetentionDays: number;
 }
 
 interface RecurringIssue {
@@ -20,6 +35,24 @@ interface RecurringIssue {
 }
 
 export class AutonomousAIService {
+  /**
+   * Get AI provider based on compliance settings
+   */
+  private getAIProvider(complianceSettings: any): AIProvider {
+    const providerType = complianceSettings.aiProvider || 'gemini';
+
+    return createAIProvider({
+      type: providerType,
+      apiKey: providerType === 'gemini' ? process.env.GEMINI_API_KEY :
+              providerType === 'azure-openai' ? complianceSettings.azureOpenAIKey : undefined,
+      endpoint: providerType === 'azure-openai' ? complianceSettings.azureOpenAIEndpoint :
+                providerType === 'local' ? complianceSettings.localModelEndpoint : undefined,
+      deploymentName: complianceSettings.azureOpenAIDeployment,
+      model: providerType === 'local' ? complianceSettings.localModelName : undefined,
+      temperature: 0.3,
+    });
+  }
+
   /**
    * Process a new ticket with autonomous AI
    * Determines if AI can respond, or if it should assign to a team member
@@ -62,6 +95,14 @@ export class AutonomousAIService {
         };
       }
 
+      // Get compliance settings
+      const complianceSettings = (organization?.settings as any)?.compliance || {
+        piiRedactionEnabled: true, // Default to enabled for security
+        aiProvider: 'gemini',
+        auditLoggingEnabled: true,
+        dataRetentionDays: 90,
+      };
+
       // usage of aiSettings.supportAgentId
       let agent;
 
@@ -101,7 +142,26 @@ export class AutonomousAIService {
       }
 
       // Prepare context from ticket messages
-      const customerMessage = ticket.messages[0]?.content || ticket.subject;
+      const rawCustomerMessage = ticket.messages[0]?.content || ticket.subject;
+
+      // Apply PII redaction if enabled (default: enabled for compliance)
+      let customerMessage = rawCustomerMessage;
+      let redactionResult = null;
+
+      if (complianceSettings.piiRedactionEnabled !== false) {
+        redactionResult = piiRedactor.redact(rawCustomerMessage);
+        customerMessage = redactionResult.redactedText;
+
+        if (redactionResult.hasRedactions) {
+          logger.info(`PII Redaction applied: ${redactionResult.redactions.length} items redacted`, {
+            ticketId,
+            types: redactionResult.redactions.map(r => r.type),
+          });
+        }
+      }
+
+      // Get AI provider based on settings
+      const aiProvider = this.getAIProvider(complianceSettings);
 
       // Use Google Gemini to analyze if AI can handle this
       const analysisPrompt = `
@@ -127,17 +187,23 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
 }
 `;
 
-      // Use Gemini Pro for analysis
-      const model = genAI.getGenerativeModel({
-        model: 'gemini-pro',
-        generationConfig: {
-          temperature: 0.3, // Lower temperature for more consistent analysis
-          maxOutputTokens: 1024,
-        },
-      });
+      // Use AI provider for analysis (supports Gemini, Azure OpenAI, or Local)
+      const aiResponse = await aiProvider.generateResponse([
+        { role: 'user', content: analysisPrompt }
+      ], { temperature: 0.3, maxTokens: 1024 });
 
-      const geminiResult = await model.generateContent(analysisPrompt);
-      const responseText = geminiResult.response.text().trim();
+      const responseText = aiResponse.content.trim();
+
+      // Log AI usage for compliance audit
+      if (complianceSettings.auditLoggingEnabled !== false) {
+        logger.info('AI Provider used for ticket analysis', {
+          ticketId,
+          provider: aiResponse.provider,
+          model: aiResponse.model,
+          piiRedacted: redactionResult?.hasRedactions || false,
+          redactionCount: redactionResult?.redactions.length || 0,
+        });
+      }
 
       // Clean response if it contains markdown code blocks
       const cleanedResponse = responseText
@@ -154,6 +220,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
           response: result.solution,
           confidence: result.confidence,
           shouldAssignToAgent: false,
+          piiRedacted: redactionResult?.hasRedactions || false,
+          redactionCount: redactionResult?.redactions.length || 0,
         };
       }
 
@@ -173,6 +241,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
         confidence: result.confidence,
         shouldAssignToAgent: true,
         assignedAgentId: teamMembers[0]?.userId, // Simple round-robin for now
+        piiRedacted: redactionResult?.hasRedactions || false,
+        redactionCount: redactionResult?.redactions.length || 0,
       };
     } catch (error) {
       logger.error('Error processing ticket with autonomous AI:', error);
