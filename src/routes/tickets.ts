@@ -40,12 +40,17 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
     });
 
     // Add unread flag to each ticket
-    const ticketsWithUnread = tickets.map((ticket) => {
+    const ticketsWithUnread = tickets.map((ticket: any) => {
       // Ticket is unread if:
       // 1. Never been viewed (lastViewedAt is null), OR
-      // 2. Has messages created after lastViewedAt
-      const isUnread = !ticket.lastViewedAt ||
-        ticket.messages.some(msg => msg.createdAt > ticket.lastViewedAt!);
+      // 2. Has customer or system messages created after lastViewedAt
+      // (Agent messages don't mark the ticket as unread)
+      const lastViewed = ticket.lastViewedAt as Date | null;
+      const isUnread = !lastViewed ||
+        ticket.messages.some((msg: any) =>
+          msg.createdAt > lastViewed! &&
+          (msg.senderType === 'customer' || msg.senderType === 'system')
+        );
 
       return {
         ...ticket,
@@ -54,7 +59,7 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
     });
 
     // Sort by unread status first, then by updatedAt
-    ticketsWithUnread.sort((a, b) => {
+    ticketsWithUnread.sort((a: any, b: any) => {
       if (a.isUnread && !b.isUnread) return -1;
       if (!a.isUnread && b.isUnread) return 1;
       return b.updatedAt.getTime() - a.updatedAt.getTime();
