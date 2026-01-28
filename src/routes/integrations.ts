@@ -33,6 +33,118 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// OAuth callback - receive code from platform (NO AUTH - this is a redirect from the OAuth provider)
+router.get(
+  '/:platform/oauth/callback',
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { platform } = req.params;
+      const { code, state } = req.query;
+
+      if (!code || !state) {
+        return res.redirect(`${process.env.FRONTEND_URL}/sources?error=missing_params`);
+      }
+
+      // Validate state
+      const stateData = oauthStates.get(state as string);
+      if (!stateData || stateData.platform !== platform.toLowerCase()) {
+        return res.redirect(`${process.env.FRONTEND_URL}/sources?error=invalid_state`);
+      }
+
+      // Remove used state
+      oauthStates.delete(state as string);
+
+      // Check if already connected
+      const existing = await prisma.sourceConnection.findFirst({
+        where: {
+          organizationId: stateData.organizationId,
+          sourceType: platform,
+        },
+      });
+
+      if (existing) {
+        return res.redirect(`${process.env.FRONTEND_URL}/sources?error=already_connected`);
+      }
+
+      let result: any;
+
+      // Exchange code for token based on platform
+      switch (platform.toLowerCase()) {
+        case 'slack':
+          result = await SlackIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'gmail':
+          result = await GmailIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'discord':
+          result = await DiscordIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'teams':
+          result = await TeamsIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'x':
+          result = await XIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'instagram':
+          result = await InstagramIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'asana':
+          result = await AsanaIntegration.exchangeCodeForToken(code as string);
+          break;
+        case 'clickup':
+          result = await ClickUpIntegration.exchangeCodeForToken(code as string);
+          break;
+        default:
+          return res.redirect(`${process.env.FRONTEND_URL}/sources?error=unsupported_platform`);
+      }
+
+      // Store connection in database
+      const connection = await prisma.sourceConnection.create({
+        data: {
+          organizationId: stateData.organizationId,
+          sourceType: platform,
+          credentials: result.credentials,
+          metadata: result.metadata,
+          sourceId: result.sourceId,
+          isActive: true,
+        },
+      });
+
+      // Subscribe to webhooks for platforms that support it
+      try {
+        const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || process.env.FRONTEND_URL?.replace('3000', '4001') || 'http://localhost:4001';
+
+        switch (platform.toLowerCase()) {
+          case 'instagram':
+            if (result.metadata?.userId) {
+              await InstagramIntegration.subscribeToWebhooks(
+                result.credentials,
+                result.metadata.userId,
+                `${webhookBaseUrl}/api/integrations/webhooks/instagram`
+              );
+            }
+            break;
+          case 'telegram':
+            await TelegramIntegration.setWebhook(
+              result.credentials,
+              `${webhookBaseUrl}/api/integrations/webhooks/telegram`
+            );
+            break;
+        }
+      } catch (webhookError) {
+        console.error(`Failed to subscribe to webhooks for ${platform}:`, webhookError);
+      }
+
+      // Redirect to frontend with success
+      res.redirect(`${process.env.FRONTEND_URL}/sources?connected=${platform}`);
+    } catch (error) {
+      console.error('OAuth callback error:', error);
+      res.redirect(`${process.env.FRONTEND_URL}/sources?error=oauth_failed`);
+    }
+  }
+);
+
+// All routes below require authentication
 router.use(authenticate);
 router.use(attachOrganization);
 
@@ -160,120 +272,7 @@ router.get(
   }
 );
 
-// OAuth callback - receive code from platform
-router.get(
-  '/:platform/oauth/callback',
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
-    try {
-      const { platform } = req.params;
-      const { code, state } = req.query;
-
-      if (!code || !state) {
-        throw new AppError('Missing code or state parameter', 400);
-      }
-
-      // Validate state
-      const stateData = oauthStates.get(state as string);
-      if (!stateData || stateData.platform !== platform.toLowerCase()) {
-        throw new AppError('Invalid state parameter', 400);
-      }
-
-      // Remove used state
-      oauthStates.delete(state as string);
-
-      // Check if already connected
-      const existing = await prisma.sourceConnection.findFirst({
-        where: {
-          organizationId: stateData.organizationId,
-          sourceType: platform,
-        },
-      });
-
-      if (existing) {
-        return res.redirect(`${process.env.FRONTEND_URL}/sources?error=already_connected`);
-      }
-
-      let result: any;
-
-      // Exchange code for token based on platform
-      switch (platform.toLowerCase()) {
-        case 'slack':
-          result = await SlackIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'gmail':
-          result = await GmailIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'discord':
-          result = await DiscordIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'teams':
-          result = await TeamsIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'x':
-          result = await XIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'instagram':
-          result = await InstagramIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'asana':
-          result = await AsanaIntegration.exchangeCodeForToken(code as string);
-          break;
-        case 'clickup':
-          result = await ClickUpIntegration.exchangeCodeForToken(code as string);
-          break;
-        default:
-          throw new AppError('OAuth not supported for this platform', 400);
-      }
-
-      // Store connection in database
-      const connection = await prisma.sourceConnection.create({
-        data: {
-          organizationId: stateData.organizationId,
-          sourceType: platform,
-          credentials: result.credentials,
-          metadata: result.metadata,
-          sourceId: result.sourceId,
-          isActive: true,
-        },
-      });
-
-      // Subscribe to webhooks for platforms that support it
-      try {
-        const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || process.env.FRONTEND_URL?.replace('3000', '4001') || 'http://localhost:4001';
-
-        switch (platform.toLowerCase()) {
-          case 'instagram':
-            if (result.metadata?.userId) {
-              await InstagramIntegration.subscribeToWebhooks(
-                result.credentials,
-                result.metadata.userId,
-                `${webhookBaseUrl}/api/integrations/webhooks/instagram`
-              );
-            }
-            break;
-          case 'telegram':
-            await TelegramIntegration.setWebhook(
-              result.credentials,
-              `${webhookBaseUrl}/api/integrations/webhooks/telegram`
-            );
-            break;
-          // X (Twitter) requires manual webhook setup via Twitter Developer Portal
-          // Teams uses Bot Framework, webhooks configured differently
-          // Other platforms handle webhooks differently
-        }
-      } catch (webhookError) {
-        console.error(`Failed to subscribe to webhooks for ${platform}:`, webhookError);
-        // Don't fail the connection if webhook subscription fails
-      }
-
-      // Redirect to frontend with success
-      res.redirect(`${process.env.FRONTEND_URL}/sources?connected=${platform}`);
-    } catch (error) {
-      console.error('OAuth callback error:', error);
-      res.redirect(`${process.env.FRONTEND_URL}/sources?error=oauth_failed`);
-    }
-  }
-);
+// OAuth callback is defined above (before auth middleware)
 
 // API Key / Token connection (for Telegram, WhatsApp, ClickUp)
 router.post(
