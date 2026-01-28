@@ -14,11 +14,30 @@ import logger from '../config/logger';
 const router = Router();
 
 /**
+ * Health check endpoint for webhooks
+ */
+router.get('/health', (req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    webhooks: {
+      slack: `${req.protocol}://${req.get('host')}/api/integrations/webhooks/slack`,
+      gmail: `${req.protocol}://${req.get('host')}/api/integrations/webhooks/gmail`,
+    },
+  });
+});
+
+/**
  * Slack webhook handler
  * Handles incoming messages, groups conversations into tickets, enriches user info,
  * and triggers AI processing.
  */
 router.post('/slack', async (req: Request, res: Response) => {
+  logger.info('Slack webhook received', {
+    type: req.body.type,
+    eventType: req.body.event?.type,
+    teamId: req.body.team_id,
+  });
   try {
     const signature = req.headers['x-slack-signature'] as string;
     const timestamp = req.headers['x-slack-request-timestamp'] as string;
@@ -312,6 +331,11 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
  * open ticket (conversation threading by threadId) or create a new ticket.
  */
 router.post('/gmail', async (req: Request, res: Response) => {
+  logger.info('Gmail webhook received', {
+    hasMessage: !!req.body.message,
+    body: req.body,
+  });
+
   try {
     // Google Pub/Sub sends base64-encoded messages
     const pubSubMessage = req.body.message;

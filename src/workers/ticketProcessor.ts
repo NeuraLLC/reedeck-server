@@ -3,6 +3,7 @@ import { ticketProcessingQueue } from '../config/queue';
 import autonomousAIService from '../services/autonomousAIService';
 import prisma from '../config/database';
 import logger from '../config/logger';
+import { sendResponseToSource } from '../services/channelRelay';
 
 interface TicketProcessingJob {
   ticketId: string;
@@ -24,14 +25,22 @@ ticketProcessingQueue.process(async (job: Job<TicketProcessingJob>) => {
 
     // If AI can respond, create the response
     if (result.shouldRespond && result.response) {
+      // Save AI response to database
       await prisma.ticketMessage.create({
         data: {
           ticketId,
-          senderType: 'agent',
+          senderType: 'system',
           content: result.response,
           isInternal: false,
         },
       });
+
+      // Send the response back to the customer via the original channel (Slack/Gmail/etc.)
+      const sent = await sendResponseToSource(ticketId, result.response);
+
+      if (!sent) {
+        logger.warn(`Failed to send auto-response to source for ticket ${ticketId}, but response saved to DB`);
+      }
 
       // Update ticket status
       await prisma.ticket.update({
@@ -42,7 +51,7 @@ ticketProcessingQueue.process(async (job: Job<TicketProcessingJob>) => {
         },
       });
 
-      logger.info(`Ticket ${ticketId} auto-resolved by AI with confidence ${result.confidence}`);
+      logger.info(`Ticket ${ticketId} auto-resolved by AI with confidence ${result.confidence}, sent: ${sent}`);
     } else if (result.shouldAssignToAgent && result.assignedAgentId) {
       // Assign to team member
       await prisma.ticket.update({
