@@ -21,6 +21,14 @@ interface SlackOAuthTokenResponse {
   };
 }
 
+export interface SlackUserInfo {
+  id: string;
+  name: string;
+  realName: string;
+  email?: string;
+  avatar?: string;
+}
+
 export class SlackIntegration {
   private static getConfig(): OAuthConfig {
     return {
@@ -33,6 +41,7 @@ export class SlackIntegration {
         'channels:read',
         'chat:write',
         'users:read',
+        'users:read.email',
         'im:read',
         'im:history',
         'im:write',
@@ -123,16 +132,24 @@ export class SlackIntegration {
   static async sendMessage(
     credentials: string,
     channel: string,
-    text: string
-  ): Promise<void> {
+    text: string,
+    threadTs?: string
+  ): Promise<{ ts: string }> {
     const decrypted = decryptObject(credentials);
 
-    await axios.post(
+    const payload: any = {
+      channel,
+      text,
+    };
+
+    // Reply in thread if threadTs is provided
+    if (threadTs) {
+      payload.thread_ts = threadTs;
+    }
+
+    const response = await axios.post(
       'https://slack.com/api/chat.postMessage',
-      {
-        channel,
-        text,
-      },
+      payload,
       {
         headers: {
           Authorization: `Bearer ${decrypted.access_token}`,
@@ -140,5 +157,67 @@ export class SlackIntegration {
         },
       }
     );
+
+    return { ts: response.data.ts };
+  }
+
+  /**
+   * Get Slack user info (real name, email, avatar)
+   */
+  static async getUserInfo(
+    credentials: string,
+    userId: string
+  ): Promise<SlackUserInfo> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://slack.com/api/users.info?user=${userId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${decrypted.access_token}`,
+        },
+      }
+    );
+
+    if (!response.data.ok) {
+      throw new Error(`Failed to fetch Slack user info: ${response.data.error}`);
+    }
+
+    const user = response.data.user;
+    return {
+      id: user.id,
+      name: user.name,
+      realName: user.real_name || user.name,
+      email: user.profile?.email,
+      avatar: user.profile?.image_72,
+    };
+  }
+
+  /**
+   * Get Slack channel info
+   */
+  static async getChannelInfo(
+    credentials: string,
+    channelId: string
+  ): Promise<{ name: string; id: string }> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://slack.com/api/conversations.info?channel=${channelId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${decrypted.access_token}`,
+        },
+      }
+    );
+
+    if (!response.data.ok) {
+      return { name: channelId, id: channelId };
+    }
+
+    return {
+      name: response.data.channel.name || channelId,
+      id: channelId,
+    };
   }
 }

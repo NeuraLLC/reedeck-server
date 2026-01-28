@@ -142,6 +142,7 @@ model Ticket {
   status         String    @default("open")
   priority       String    @default("medium")
   assignedTo     String?   @map("assigned_to")
+  metadata       Json?     @default("{}")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
   closedAt       DateTime? @map("closed_at")

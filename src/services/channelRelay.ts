@@ -1,0 +1,66 @@
+/**
+ * Channel Relay Service
+ *
+ * Sends agent responses back to the original source platform (Slack, etc.)
+ * Only called when a human agent explicitly sends a reply — AI draft responses
+ * stay internal until an agent approves and sends them.
+ */
+
+import prisma from '../config/database';
+import logger from '../config/logger';
+import { SlackIntegration } from './integrations/slack';
+
+/**
+ * Send a message back to the source platform the ticket originated from.
+ * Looks up ticket metadata to determine platform and channel, then delivers the message.
+ */
+export async function sendResponseToSource(
+  ticketId: string,
+  responseText: string
+): Promise<boolean> {
+  try {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: { metadata: true, sourceId: true },
+    });
+
+    if (!ticket?.sourceId) return false;
+
+    const metadata = ticket.metadata as any;
+    if (!metadata?.source) return false;
+
+    // Get the source connection credentials
+    const sourceConnection = await prisma.sourceConnection.findUnique({
+      where: { id: ticket.sourceId },
+      select: { credentials: true, sourceType: true },
+    });
+
+    if (!sourceConnection) return false;
+
+    switch (metadata.source) {
+      case 'slack': {
+        if (!metadata.slackChannelId) break;
+        await SlackIntegration.sendMessage(
+          sourceConnection.credentials as string,
+          metadata.slackChannelId,
+          responseText,
+          metadata.slackMessageTs // Reply in thread if available
+        );
+        logger.info(
+          `Response sent to Slack channel ${metadata.slackChannelId} for ticket ${ticketId}`
+        );
+        return true;
+      }
+      // Future: add telegram, discord, etc.
+    }
+
+    return false;
+  } catch (error) {
+    logger.error(
+      `Failed to send response to source for ticket ${ticketId}:`,
+      error
+    );
+    // Don't throw — the response is saved in DB regardless
+    return false;
+  }
+}

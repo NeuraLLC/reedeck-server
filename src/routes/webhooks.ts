@@ -13,6 +13,8 @@ const router = Router();
 
 /**
  * Slack webhook handler
+ * Handles incoming messages, groups conversations into tickets, enriches user info,
+ * and triggers AI processing.
  */
 router.post('/slack', async (req: Request, res: Response) => {
   try {
@@ -30,10 +32,21 @@ router.post('/slack', async (req: Request, res: Response) => {
       return res.json({ challenge: req.body.challenge });
     }
 
-    // Handle event
+    // Handle event callbacks
     if (req.body.type === 'event_callback') {
       const event = req.body.event;
       const teamId = req.body.team_id;
+
+      // Filter: only process actual user messages
+      // Skip bot messages, message edits/deletes, and subtypes like channel_join
+      if (
+        event.type !== 'message' ||
+        event.bot_id ||
+        event.subtype ||
+        !event.text
+      ) {
+        return res.json({ ok: true });
+      }
 
       // Find the source connection for this Slack team
       const sourceConnection = await prisma.sourceConnection.findFirst({
@@ -47,25 +60,120 @@ router.post('/slack', async (req: Request, res: Response) => {
         },
       });
 
-      if (sourceConnection) {
-        // Store incoming message as ticket with message
+      if (!sourceConnection) {
+        return res.json({ ok: true });
+      }
+
+      // Enrich user info from Slack API (real name, email)
+      let customerName = `Slack User ${event.user}`;
+      let customerEmail = `${event.user}@slack.local`;
+      try {
+        const userInfo = await SlackIntegration.getUserInfo(
+          sourceConnection.credentials as string,
+          event.user
+        );
+        customerName = userInfo.realName;
+        customerEmail = userInfo.email || `${event.user}@slack.local`;
+      } catch (err) {
+        console.error('Failed to fetch Slack user info:', err);
+      }
+
+      // Get channel name for subject
+      let channelName = event.channel;
+      try {
+        const channelInfo = await SlackIntegration.getChannelInfo(
+          sourceConnection.credentials as string,
+          event.channel
+        );
+        channelName = channelInfo.name;
+      } catch (err) {
+        // Keep channel ID as fallback
+      }
+
+      // Conversation threading: check for an existing open ticket from the same user in the same channel
+      const existingTicket = await prisma.ticket.findFirst({
+        where: {
+          organizationId: sourceConnection.organizationId,
+          sourceId: sourceConnection.id,
+          customerEmail,
+          status: { in: ['open', 'in_progress'] },
+          metadata: {
+            path: ['slackChannelId'],
+            equals: event.channel,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (existingTicket) {
+        // Add message to existing ticket conversation
+        await prisma.ticketMessage.create({
+          data: {
+            ticketId: existingTicket.id,
+            senderType: 'customer',
+            content: event.text,
+          },
+        });
+
+        // Update ticket to re-open if it was in progress
+        await prisma.ticket.update({
+          where: { id: existingTicket.id },
+          data: { updatedAt: new Date() },
+        });
+
+        // Re-trigger AI processing for the new message
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: existingTicket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
+      } else {
+        // Create new ticket with Slack metadata for return communication
         const ticket = await prisma.ticket.create({
           data: {
             organizationId: sourceConnection.organizationId,
             sourceId: sourceConnection.id,
-            customerName: `Slack User ${event.user}`,
-            customerEmail: `${event.user}@slack.local`,
-            subject: `Message from Slack channel ${event.channel}`,
+            customerName,
+            customerEmail,
+            subject: `Slack message from #${channelName}`,
             status: 'open',
             priority: 'medium',
+            metadata: {
+              source: 'slack',
+              slackChannelId: event.channel,
+              slackUserId: event.user,
+              slackTeamId: teamId,
+              slackMessageTs: event.ts,
+            },
             messages: {
               create: {
                 senderType: 'customer',
-                content: event.text || '',
+                content: event.text,
               },
             },
           },
         });
+
+        // Trigger autonomous AI processing if enabled
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: ticket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
       }
 
       res.json({ ok: true });

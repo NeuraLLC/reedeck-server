@@ -121,128 +121,6 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Temporary endpoint to seed subscription plans
-app.post('/seed-plans', async (req, res) => {
-  try {
-    const existingPlans = await prismaClient.subscriptionPlan.count();
-    if (existingPlans > 0) {
-      return res.json({ message: 'Plans already exist', count: existingPlans });
-    }
-
-    await prismaClient.subscriptionPlan.createMany({
-      data: [
-        {
-          name: 'Starter',
-          priceMonthly: 50.00,
-          channelsLimit: 3,
-          messagesLimit: 10000,
-          formsLimit: 2,
-          aiAgentsLimit: 1,
-          teammatesLimit: 5,
-          chatHistoryDays: 7,
-          features: { support: 'email', analytics: 'basic' },
-        },
-        {
-          name: 'Professional',
-          priceMonthly: 85.00,
-          channelsLimit: 5,
-          messagesLimit: 50000,
-          formsLimit: 10,
-          aiAgentsLimit: 3,
-          teammatesLimit: 20,
-          chatHistoryDays: 30,
-          features: { support: 'priority', analytics: 'advanced', custom_branding: true, api_access: true },
-        },
-        {
-          name: 'Enterprise',
-          priceMonthly: 118.00,
-          channelsLimit: -1,
-          messagesLimit: -1,
-          formsLimit: -1,
-          aiAgentsLimit: -1,
-          teammatesLimit: -1,
-          chatHistoryDays: -1,
-          features: { support: 'dedicated', analytics: 'advanced', custom_branding: true, api_access: true, white_label: true, sso: true, dedicated_manager: true },
-        },
-      ],
-    });
-
-    res.json({ message: 'Subscription plans created successfully', count: 3 });
-  } catch (error) {
-    logger.error('Seed plans error:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
-  }
-});
-
-// Temporary endpoint to create demo_requests table
-app.post('/create-demo-table', async (req, res) => {
-  try {
-    await prismaClient.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS demo_requests (
-        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-        first_name TEXT NOT NULL,
-        last_name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        organization_name TEXT NOT NULL,
-        team_size TEXT,
-        use_case TEXT,
-        status TEXT NOT NULL DEFAULT 'submitted',
-        demo_booked_at TIMESTAMP,
-        demo_completed_at TIMESTAMP,
-        converted_user_id TEXT,
-        notes TEXT,
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-
-    await prismaClient.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_demo_requests_email ON demo_requests(email)`);
-    await prismaClient.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_demo_requests_status ON demo_requests(status)`);
-
-    res.json({ message: 'demo_requests table created successfully' });
-  } catch (error) {
-    logger.error('Create table error:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
-  }
-});
-
-// Endpoint to enable RLS on demo_requests table
-app.post('/enable-demo-rls', async (req, res) => {
-  try {
-    // Enable RLS on the table
-    await prismaClient.$executeRawUnsafe(`ALTER TABLE demo_requests ENABLE ROW LEVEL SECURITY`);
-
-    // Drop existing policies if they exist
-    await prismaClient.$executeRawUnsafe(`DROP POLICY IF EXISTS "Allow public insert" ON demo_requests`);
-    await prismaClient.$executeRawUnsafe(`DROP POLICY IF EXISTS "Service role full access" ON demo_requests`);
-
-    // Allow anyone to INSERT (submit demo requests)
-    await prismaClient.$executeRawUnsafe(`
-      CREATE POLICY "Allow public insert"
-      ON demo_requests
-      FOR INSERT
-      TO anon, authenticated
-      WITH CHECK (true)
-    `);
-
-    // Service role (our backend) has full access and bypasses RLS
-    // No need for explicit SELECT/UPDATE/DELETE policies for public
-    // This means only our backend can read/update/delete demo requests
-
-    logger.info('RLS enabled on demo_requests table');
-    res.json({
-      message: 'RLS enabled successfully on demo_requests table',
-      policies: [
-        'Public can INSERT (submit demo requests)',
-        'Service role has full access (backend only)',
-        'Public cannot SELECT/UPDATE/DELETE (prevents data exposure)'
-      ]
-    });
-  } catch (error) {
-    logger.error('Enable RLS error:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
-  }
-});
 
 // Apply speed limiter and general rate limiter to all API routes
 app.use('/api', speedLimiter);
@@ -283,6 +161,11 @@ if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
     logger.info(`Environment: ${process.env.NODE_ENV}`);
+
+    // Start background workers in the same process
+    import('./workers/index')
+      .then(() => logger.info('Background workers started in-process'))
+      .catch((err) => logger.error('Failed to start background workers:', err));
   });
 }
 

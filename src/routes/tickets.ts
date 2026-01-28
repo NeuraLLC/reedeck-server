@@ -6,6 +6,7 @@ import { AuthRequest } from '../types';
 import prisma from '../config/database';
 import { AppError } from '../middleware/errorHandler';
 import { ticketProcessingQueue } from '../config/queue';
+import { sendResponseToSource } from '../services/channelRelay';
 
 const router = Router();
 
@@ -206,6 +207,13 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response, next: NextF
         },
       },
     });
+
+    // Send non-internal agent replies back to the source platform (Slack, etc.)
+    if (!isInternal) {
+      sendResponseToSource(req.params.id, content).catch((err) => {
+        console.error('Failed to relay message to source:', err);
+      });
+    }
 
     res.status(201).json(message);
   } catch (error) {
