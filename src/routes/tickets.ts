@@ -30,20 +30,40 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
       where,
       include: {
         messages: {
-          take: 1,
           orderBy: { createdAt: 'desc' },
         },
         tags: true,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { updatedAt: 'desc' },
       skip: (Number(page) - 1) * Number(limit),
       take: Number(limit),
+    });
+
+    // Add unread flag to each ticket
+    const ticketsWithUnread = tickets.map((ticket) => {
+      // Ticket is unread if:
+      // 1. Never been viewed (lastViewedAt is null), OR
+      // 2. Has messages created after lastViewedAt
+      const isUnread = !ticket.lastViewedAt ||
+        ticket.messages.some(msg => msg.createdAt > ticket.lastViewedAt!);
+
+      return {
+        ...ticket,
+        isUnread,
+      };
+    });
+
+    // Sort by unread status first, then by updatedAt
+    ticketsWithUnread.sort((a, b) => {
+      if (a.isUnread && !b.isUnread) return -1;
+      if (!a.isUnread && b.isUnread) return 1;
+      return b.updatedAt.getTime() - a.updatedAt.getTime();
     });
 
     const total = await prisma.ticket.count({ where });
 
     res.json({
-      tickets,
+      tickets: ticketsWithUnread,
       pagination: {
         total,
         page: Number(page),
@@ -88,6 +108,31 @@ router.get('/:id', async (req: AuthRequest, res: Response, next: NextFunction) =
     }
 
     res.json(ticket);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Mark ticket as read
+router.post('/:id/mark-read', async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const ticket = await prisma.ticket.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId: req.organizationId,
+      },
+    });
+
+    if (!ticket) {
+      throw new AppError('Ticket not found', 404);
+    }
+
+    const updated = await prisma.ticket.update({
+      where: { id: req.params.id },
+      data: { lastViewedAt: new Date() },
+    });
+
+    res.json({ success: true, lastViewedAt: updated.lastViewedAt });
   } catch (error) {
     next(error);
   }
