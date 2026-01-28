@@ -49,13 +49,17 @@ router.post('/slack', async (req: Request, res: Response) => {
     const timestamp = req.headers['x-slack-request-timestamp'] as string;
     const body = JSON.stringify(req.body);
 
+    console.log('[SLACK] Verifying signature...');
     // Verify webhook signature
     if (!SlackIntegration.verifyWebhookSignature(timestamp, body, signature)) {
+      console.log('[SLACK] ❌ Signature verification failed');
       return res.status(401).json({ error: 'Invalid signature' });
     }
+    console.log('[SLACK] ✅ Signature verified');
 
     // Handle URL verification challenge
     if (req.body.type === 'url_verification') {
+      console.log('[SLACK] URL verification challenge');
       return res.json({ challenge: req.body.challenge });
     }
 
@@ -63,6 +67,15 @@ router.post('/slack', async (req: Request, res: Response) => {
     if (req.body.type === 'event_callback') {
       const event = req.body.event;
       const teamId = req.body.team_id;
+
+      console.log('[SLACK] Event details:', JSON.stringify({
+        type: event.type,
+        hasText: !!event.text,
+        hasBotId: !!event.bot_id,
+        subtype: event.subtype,
+        user: event.user,
+        channel: event.channel,
+      }));
 
       // Filter: only process actual user messages
       // Skip bot messages, message edits/deletes, and subtypes like channel_join
@@ -72,10 +85,14 @@ router.post('/slack', async (req: Request, res: Response) => {
         event.subtype ||
         !event.text
       ) {
+        console.log('[SLACK] ⏭️  Message filtered out (bot, subtype, or no text)');
         return res.json({ ok: true });
       }
 
+      console.log('[SLACK] ✅ Message passed filters, processing...');
+
       // Find the source connection for this Slack team
+      console.log('[SLACK] Looking for source connection with teamId:', teamId);
       const sourceConnection = await prisma.sourceConnection.findFirst({
         where: {
           sourceType: 'Slack',
@@ -88,12 +105,16 @@ router.post('/slack', async (req: Request, res: Response) => {
       });
 
       if (!sourceConnection) {
+        console.log('[SLACK] ❌ No source connection found for teamId:', teamId);
         return res.json({ ok: true });
       }
+
+      console.log('[SLACK] ✅ Source connection found:', sourceConnection.id);
 
       // Enrich user info from Slack API (real name, email)
       let customerName = `Slack User ${event.user}`;
       let customerEmail = `${event.user}@slack.local`;
+      console.log('[SLACK] Fetching user info for:', event.user);
       try {
         const userInfo = await SlackIntegration.getUserInfo(
           sourceConnection.credentials as string,
@@ -101,8 +122,9 @@ router.post('/slack', async (req: Request, res: Response) => {
         );
         customerName = userInfo.realName;
         customerEmail = userInfo.email || `${event.user}@slack.local`;
+        console.log('[SLACK] ✅ User info fetched:', { customerName, customerEmail });
       } catch (err) {
-        console.error('Failed to fetch Slack user info:', err);
+        console.error('[SLACK] ❌ Failed to fetch user info:', err);
       }
 
       // Get channel name for subject
@@ -118,6 +140,7 @@ router.post('/slack', async (req: Request, res: Response) => {
       }
 
       // Conversation threading: check for an existing open ticket from the same user in the same channel
+      console.log('[SLACK] Checking for existing ticket...', { customerEmail, channel: event.channel });
       const existingTicket = await prisma.ticket.findFirst({
         where: {
           organizationId: sourceConnection.organizationId,
@@ -133,6 +156,7 @@ router.post('/slack', async (req: Request, res: Response) => {
       });
 
       if (existingTicket) {
+        console.log('[SLACK] ✅ Found existing ticket:', existingTicket.id);
         // Add message to existing ticket conversation
         await prisma.ticketMessage.create({
           data: {
@@ -162,6 +186,7 @@ router.post('/slack', async (req: Request, res: Response) => {
           });
         }
       } else {
+        console.log('[SLACK] Creating new ticket...');
         // Create new ticket with Slack metadata for return communication
         const ticket = await prisma.ticket.create({
           data: {
@@ -187,6 +212,7 @@ router.post('/slack', async (req: Request, res: Response) => {
             },
           },
         });
+        console.log('[SLACK] ✅ Ticket created:', ticket.id);
 
         // Trigger autonomous AI processing if enabled
         const organization = await prisma.organization.findUnique({
@@ -205,10 +231,12 @@ router.post('/slack', async (req: Request, res: Response) => {
 
       res.json({ ok: true });
     } else {
+      console.log('[SLACK] ⏭️  Not an event_callback, skipping');
       res.json({ ok: true });
     }
   } catch (error) {
-    console.error('Slack webhook error:', error);
+    console.error('[SLACK] ❌ ERROR:', error);
+    logger.error('Slack webhook error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
