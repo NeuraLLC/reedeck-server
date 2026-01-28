@@ -95,7 +95,10 @@ router.post('/slack', async (req: Request, res: Response) => {
       console.log('[SLACK] Looking for source connection with teamId:', teamId);
       const sourceConnection = await prisma.sourceConnection.findFirst({
         where: {
-          sourceType: 'Slack',
+          sourceType: {
+            equals: 'Slack',
+            mode: 'insensitive',
+          },
           metadata: {
             path: ['teamId'],
             equals: teamId,
