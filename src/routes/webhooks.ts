@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import {
   SlackIntegration,
+  GmailIntegration,
   TelegramIntegration,
   WhatsAppIntegration,
   InstagramIntegration,
@@ -8,6 +9,7 @@ import {
   AsanaIntegration,
 } from '../services/integrations';
 import prisma from '../config/database';
+import logger from '../config/logger';
 
 const router = Router();
 
@@ -302,24 +304,207 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
 
 /**
  * Gmail webhook handler (Google Pub/Sub)
+ *
+ * Google sends a Pub/Sub notification whenever the connected mailbox changes.
+ * The notification contains the emailAddress and a historyId.  We use the
+ * Gmail History API to fetch only the new INBOX messages since our last
+ * recorded historyId, parse each email, and either append to an existing
+ * open ticket (conversation threading by threadId) or create a new ticket.
  */
 router.post('/gmail', async (req: Request, res: Response) => {
   try {
     // Google Pub/Sub sends base64-encoded messages
-    const message = req.body.message;
-    if (!message || !message.data) {
+    const pubSubMessage = req.body.message;
+    if (!pubSubMessage || !pubSubMessage.data) {
       return res.status(400).json({ error: 'Invalid message format' });
     }
 
-    const decoded = Buffer.from(message.data, 'base64').toString('utf-8');
+    const decoded = Buffer.from(pubSubMessage.data, 'base64').toString('utf-8');
     const notification = JSON.parse(decoded);
+    // notification = { emailAddress: "support@acme.com", historyId: "12345" }
 
-    // Gmail sends historyId updates, you need to fetch the actual email
-    // TODO: Implement email fetching using Gmail API with stored credentials
+    const { emailAddress, historyId } = notification;
+    if (!emailAddress || !historyId) {
+      return res.status(200).send('OK');
+    }
+
+    // Find the source connection for this Gmail account
+    const sourceConnection = await prisma.sourceConnection.findFirst({
+      where: {
+        sourceType: 'Gmail',
+        metadata: {
+          path: ['email'],
+          equals: emailAddress,
+        },
+        isActive: true,
+      },
+    });
+
+    if (!sourceConnection) {
+      logger.warn(`Gmail webhook: no source connection found for ${emailAddress}`);
+      return res.status(200).send('OK');
+    }
+
+    // Use the stored historyId from metadata to fetch only new messages
+    const storedMeta = sourceConnection.metadata as any;
+    const lastHistoryId = storedMeta?.lastHistoryId;
+
+    // If we don't have a previous historyId, store this one and skip
+    // (first notification after watch setup — nothing to diff against)
+    if (!lastHistoryId) {
+      await prisma.sourceConnection.update({
+        where: { id: sourceConnection.id },
+        data: {
+          metadata: { ...storedMeta, lastHistoryId: historyId },
+        },
+      });
+      return res.status(200).send('OK');
+    }
+
+    // Refresh token if needed, then fetch new message IDs
+    let credentials = sourceConnection.credentials as string;
+    try {
+      credentials = await GmailIntegration.refreshAccessToken(credentials);
+      await prisma.sourceConnection.update({
+        where: { id: sourceConnection.id },
+        data: { credentials },
+      });
+    } catch (err) {
+      logger.error('Gmail token refresh failed:', err);
+    }
+
+    const newMessageIds = await GmailIntegration.getHistory(credentials, lastHistoryId);
+
+    // Update stored historyId for next notification
+    await prisma.sourceConnection.update({
+      where: { id: sourceConnection.id },
+      data: {
+        metadata: { ...storedMeta, lastHistoryId: historyId },
+        lastSyncAt: new Date(),
+      },
+    });
+
+    if (newMessageIds.length === 0) {
+      return res.status(200).send('OK');
+    }
+
+    // Get the connected account email so we can skip outgoing messages
+    const connectedEmail = storedMeta?.email || emailAddress;
+
+    // Process each new email
+    for (const msgId of newMessageIds) {
+      try {
+        const email = await GmailIntegration.getMessage(credentials, msgId);
+
+        // Skip messages sent by the support account itself (outgoing replies)
+        if (email.fromEmail.toLowerCase() === connectedEmail.toLowerCase()) {
+          continue;
+        }
+
+        // Conversation threading: check for existing open ticket with same Gmail threadId
+        const existingTicket = await prisma.ticket.findFirst({
+          where: {
+            organizationId: sourceConnection.organizationId,
+            sourceId: sourceConnection.id,
+            status: { in: ['open', 'in_progress'] },
+            metadata: {
+              path: ['emailThreadId'],
+              equals: email.threadId,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (existingTicket) {
+          // Add message to existing ticket conversation
+          await prisma.ticketMessage.create({
+            data: {
+              ticketId: existingTicket.id,
+              senderType: 'customer',
+              content: email.body,
+            },
+          });
+
+          // Bump updatedAt
+          await prisma.ticket.update({
+            where: { id: existingTicket.id },
+            data: {
+              updatedAt: new Date(),
+              metadata: {
+                ...(existingTicket.metadata as any),
+                emailLastMessageId: email.messageId,
+              },
+            },
+          });
+
+          // Re-trigger AI processing
+          const organization = await prisma.organization.findUnique({
+            where: { id: sourceConnection.organizationId },
+            select: { settings: true },
+          });
+          const aiSettings = (organization?.settings as any)?.autonomousAI;
+          if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+            const { ticketProcessingQueue } = require('../config/queue');
+            ticketProcessingQueue.add({
+              ticketId: existingTicket.id,
+              organizationId: sourceConnection.organizationId,
+            });
+          }
+
+          logger.info(`Gmail: appended message to ticket ${existingTicket.id} (thread ${email.threadId})`);
+        } else {
+          // Create new ticket with email metadata
+          const ticket = await prisma.ticket.create({
+            data: {
+              organizationId: sourceConnection.organizationId,
+              sourceId: sourceConnection.id,
+              customerName: email.fromName || email.fromEmail,
+              customerEmail: email.fromEmail,
+              subject: email.subject || 'No Subject',
+              status: 'open',
+              priority: 'medium',
+              metadata: {
+                source: 'gmail',
+                emailThreadId: email.threadId,
+                emailMessageId: email.messageId,
+                emailLastMessageId: email.messageId,
+                emailFrom: email.fromEmail,
+                emailSubject: email.subject,
+              },
+              messages: {
+                create: {
+                  senderType: 'customer',
+                  content: email.body,
+                },
+              },
+            },
+          });
+
+          // Trigger AI processing if enabled
+          const organization = await prisma.organization.findUnique({
+            where: { id: sourceConnection.organizationId },
+            select: { settings: true },
+          });
+          const aiSettings = (organization?.settings as any)?.autonomousAI;
+          if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+            const { ticketProcessingQueue } = require('../config/queue');
+            ticketProcessingQueue.add({
+              ticketId: ticket.id,
+              organizationId: sourceConnection.organizationId,
+            });
+          }
+
+          logger.info(`Gmail: created ticket ${ticket.id} from ${email.fromEmail} — "${email.subject}"`);
+        }
+      } catch (msgErr) {
+        logger.error(`Gmail: failed to process message ${msgId}:`, msgErr);
+        // Continue processing remaining messages
+      }
+    }
 
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Gmail webhook error:', error);
+    logger.error('Gmail webhook error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

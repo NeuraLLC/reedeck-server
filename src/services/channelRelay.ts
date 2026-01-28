@@ -1,7 +1,7 @@
 /**
  * Channel Relay Service
  *
- * Sends agent responses back to the original source platform (Slack, etc.)
+ * Sends agent responses back to the original source platform (Slack, Gmail, etc.)
  * Only called when a human agent explicitly sends a reply — AI draft responses
  * stay internal until an agent approves and sends them.
  */
@@ -9,6 +9,7 @@
 import prisma from '../config/database';
 import logger from '../config/logger';
 import { SlackIntegration } from './integrations/slack';
+import { GmailIntegration } from './integrations/gmail';
 
 /**
  * Send a message back to the source platform the ticket originated from.
@@ -48,6 +49,46 @@ export async function sendResponseToSource(
         );
         logger.info(
           `Response sent to Slack channel ${metadata.slackChannelId} for ticket ${ticketId}`
+        );
+        return true;
+      }
+      case 'gmail': {
+        if (!metadata.emailFrom || !metadata.emailSubject) break;
+
+        // Refresh token before sending
+        let credentials = sourceConnection.credentials as string;
+        try {
+          credentials = await GmailIntegration.refreshAccessToken(credentials);
+          await prisma.sourceConnection.update({
+            where: { id: ticket.sourceId! },
+            data: { credentials },
+          });
+        } catch (refreshErr) {
+          logger.warn('Gmail token refresh failed, trying with existing token:', refreshErr);
+        }
+
+        const result = await GmailIntegration.replyToEmail(
+          credentials,
+          metadata.emailFrom,          // Reply to the customer's email
+          metadata.emailSubject,        // Preserves original subject
+          responseText,
+          metadata.emailThreadId,       // Thread the reply in Gmail
+          metadata.emailMessageId       // In-Reply-To header for proper threading
+        );
+
+        // Store the new messageId so future replies chain correctly
+        await prisma.ticket.update({
+          where: { id: ticketId },
+          data: {
+            metadata: {
+              ...metadata,
+              emailLastMessageId: result.messageId,
+            },
+          },
+        });
+
+        logger.info(
+          `Response sent via Gmail to ${metadata.emailFrom} for ticket ${ticketId}`
         );
         return true;
       }

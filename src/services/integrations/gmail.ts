@@ -2,6 +2,20 @@ import axios from 'axios';
 import { OAuthService, OAuthConfig } from '../oauth';
 import { encryptObject, decryptObject } from '../encryption';
 
+export interface ParsedEmail {
+  messageId: string;
+  threadId: string;
+  from: string;
+  fromName: string;
+  fromEmail: string;
+  to: string;
+  subject: string;
+  body: string;
+  date: string;
+  inReplyTo?: string;
+  references?: string;
+}
+
 export class GmailIntegration {
   private static getConfig(): OAuthConfig {
     return {
@@ -147,5 +161,238 @@ export class GmailIntegration {
         },
       }
     );
+  }
+
+  /**
+   * Get the connected Gmail profile (email address)
+   */
+  static async getProfile(
+    credentials: string
+  ): Promise<{ emailAddress: string; historyId: string }> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      {
+        headers: {
+          Authorization: `Bearer ${decrypted.access_token}`,
+        },
+      }
+    );
+
+    return {
+      emailAddress: response.data.emailAddress,
+      historyId: response.data.historyId,
+    };
+  }
+
+  /**
+   * Get new messages since a specific historyId.
+   * Returns message IDs of newly added inbox messages.
+   */
+  static async getHistory(
+    credentials: string,
+    startHistoryId: string
+  ): Promise<string[]> {
+    const decrypted = decryptObject(credentials);
+
+    try {
+      const response = await axios.get(
+        'https://gmail.googleapis.com/gmail/v1/users/me/history',
+        {
+          params: {
+            startHistoryId,
+            historyTypes: 'messageAdded',
+            labelId: 'INBOX',
+          },
+          headers: {
+            Authorization: `Bearer ${decrypted.access_token}`,
+          },
+        }
+      );
+
+      const messageIds: string[] = [];
+      const history = response.data.history || [];
+      for (const record of history) {
+        if (record.messagesAdded) {
+          for (const added of record.messagesAdded) {
+            // Only include messages that landed in INBOX
+            if (added.message?.labelIds?.includes('INBOX')) {
+              messageIds.push(added.message.id);
+            }
+          }
+        }
+      }
+
+      return messageIds;
+    } catch (error: any) {
+      // 404 means historyId is too old; caller should do a full sync
+      if (error.response?.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch and parse a single email message by ID.
+   */
+  static async getMessage(
+    credentials: string,
+    messageId: string
+  ): Promise<ParsedEmail> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`,
+      {
+        params: { format: 'full' },
+        headers: {
+          Authorization: `Bearer ${decrypted.access_token}`,
+        },
+      }
+    );
+
+    return this.parseGmailMessage(response.data);
+  }
+
+  /**
+   * Reply to an email thread via Gmail API.
+   * Preserves threading by setting In-Reply-To and References headers.
+   */
+  static async replyToEmail(
+    credentials: string,
+    to: string,
+    subject: string,
+    body: string,
+    threadId: string,
+    inReplyTo?: string
+  ): Promise<{ messageId: string; threadId: string }> {
+    const decrypted = decryptObject(credentials);
+
+    // Build RFC 2822 email with threading headers
+    const headers = [
+      `To: ${to}`,
+      'Content-Type: text/html; charset=utf-8',
+      'MIME-Version: 1.0',
+      `Subject: ${subject.startsWith('Re:') ? subject : `Re: ${subject}`}`,
+    ];
+
+    if (inReplyTo) {
+      headers.push(`In-Reply-To: ${inReplyTo}`);
+      headers.push(`References: ${inReplyTo}`);
+    }
+
+    const email = [...headers, '', body].join('\n');
+
+    const encodedEmail = Buffer.from(email)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const response = await axios.post(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+      {
+        raw: encodedEmail,
+        threadId,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${decrypted.access_token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    return {
+      messageId: response.data.id,
+      threadId: response.data.threadId,
+    };
+  }
+
+  /**
+   * Parse a Gmail API message payload into a clean ParsedEmail object.
+   */
+  private static parseGmailMessage(message: any): ParsedEmail {
+    const headers = message.payload?.headers || [];
+    const getHeader = (name: string): string => {
+      const header = headers.find(
+        (h: any) => h.name.toLowerCase() === name.toLowerCase()
+      );
+      return header?.value || '';
+    };
+
+    const from = getHeader('From');
+    const { name: fromName, email: fromEmail } = this.parseEmailAddress(from);
+
+    // Extract body — prefer text/plain, fall back to text/html
+    let body = '';
+    const payload = message.payload;
+
+    if (payload.body?.data) {
+      body = Buffer.from(payload.body.data, 'base64').toString('utf-8');
+    } else if (payload.parts) {
+      // Multipart message — walk parts to find text
+      body = this.extractBodyFromParts(payload.parts);
+    }
+
+    return {
+      messageId: message.id,
+      threadId: message.threadId,
+      from,
+      fromName,
+      fromEmail,
+      to: getHeader('To'),
+      subject: getHeader('Subject'),
+      body,
+      date: getHeader('Date'),
+      inReplyTo: getHeader('In-Reply-To') || undefined,
+      references: getHeader('References') || undefined,
+    };
+  }
+
+  /**
+   * Parse "Name <email@example.com>" into name and email.
+   */
+  private static parseEmailAddress(raw: string): {
+    name: string;
+    email: string;
+  } {
+    const match = raw.match(/^(.*?)\s*<([^>]+)>$/);
+    if (match) {
+      return {
+        name: match[1].replace(/^["']|["']$/g, '').trim(),
+        email: match[2].trim(),
+      };
+    }
+    // Plain email address
+    return { name: raw.trim(), email: raw.trim() };
+  }
+
+  /**
+   * Recursively extract text body from MIME multipart message parts.
+   */
+  private static extractBodyFromParts(parts: any[]): string {
+    let textBody = '';
+    let htmlBody = '';
+
+    for (const part of parts) {
+      if (part.parts) {
+        const nested = this.extractBodyFromParts(part.parts);
+        if (nested) return nested;
+      }
+      if (part.mimeType === 'text/plain' && part.body?.data) {
+        textBody = Buffer.from(part.body.data, 'base64').toString('utf-8');
+      }
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        htmlBody = Buffer.from(part.body.data, 'base64').toString('utf-8');
+      }
+    }
+
+    // Prefer plain text, fall back to HTML with tags stripped
+    if (textBody) return textBody;
+    if (htmlBody) return htmlBody.replace(/<[^>]*>/g, '');
+    return '';
   }
 }
