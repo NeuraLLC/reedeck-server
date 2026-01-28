@@ -33,6 +33,12 @@ router.get('/health', (req: Request, res: Response) => {
  * and triggers AI processing.
  */
 router.post('/slack', async (req: Request, res: Response) => {
+  console.log('[SLACK WEBHOOK] Received:', JSON.stringify({
+    type: req.body.type,
+    eventType: req.body.event?.type,
+    teamId: req.body.team_id,
+  }));
+
   logger.info('Slack webhook received', {
     type: req.body.type,
     eventType: req.body.event?.type,
