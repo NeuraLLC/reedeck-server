@@ -10,6 +10,8 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { SlackIntegration } from './integrations/slack';
 import { GmailIntegration } from './integrations/gmail';
+import { DiscordIntegration } from './integrations/discord';
+import { TelegramIntegration } from './integrations/telegram';
 
 /**
  * Send a message back to the source platform the ticket originated from.
@@ -92,7 +94,30 @@ export async function sendResponseToSource(
         );
         return true;
       }
-      // Future: add telegram, discord, etc.
+      case 'discord': {
+        if (!metadata.discordChannelId) break;
+        await DiscordIntegration.sendMessage(
+          sourceConnection.credentials as string,
+          metadata.discordChannelId,
+          responseText
+        );
+        logger.info(
+          `Response sent to Discord channel ${metadata.discordChannelId} for ticket ${ticketId}`
+        );
+        return true;
+      }
+      case 'telegram': {
+        if (!metadata.telegramChatId) break;
+        await TelegramIntegration.sendMessage(
+          sourceConnection.credentials as string,
+          metadata.telegramChatId,
+          responseText
+        );
+        logger.info(
+          `Response sent to Telegram chat ${metadata.telegramChatId} for ticket ${ticketId}`
+        );
+        return true;
+      }
     }
 
     return false;
