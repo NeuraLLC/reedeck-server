@@ -82,20 +82,77 @@ router.post('/:formId/submit', async (req: Request, res: Response, next: NextFun
       data: {
         formId,
         data: submissionData,
+        ipAddress: req.ip || (req.headers['x-forwarded-for'] as string) || undefined,
+        userAgent: req.headers['user-agent'] || undefined,
       },
     });
 
-    // Increment form views counter (stored in settings)
+    // Increment form submission counter (stored in settings)
     const currentSettings = form.settings as any || {};
     await prisma.form.update({
       where: { id: formId },
       data: {
         settings: {
           ...currentSettings,
-          views: (currentSettings.views || 0) + 1,
+          submissionCount: (currentSettings.submissionCount || 0) + 1,
         },
       },
     });
+
+    // Create a ticket from the form submission
+    try {
+      // Extract common fields from submission
+      let customerName = 'Anonymous';
+      let customerEmail = 'unknown@form.submission';
+      let subject = `Form Submission: ${form.name}`;
+      let messageContent = '';
+
+      // Build message content and extract customer info
+      formFields.forEach((field: any) => {
+        const value = submissionData[field.id];
+        if (value !== undefined && value !== '') {
+          // Try to identify name and email fields
+          const labelLower = field.label.toLowerCase();
+          if (field.type === 'email' || labelLower.includes('email')) {
+            customerEmail = value;
+          } else if (labelLower.includes('name') && !labelLower.includes('company')) {
+            customerName = value;
+          } else if (labelLower.includes('subject')) {
+            subject = value;
+          }
+
+          // Add to message content
+          messageContent += `**${field.label}:** ${value}\n`;
+        }
+      });
+
+      // Create the ticket
+      await prisma.ticket.create({
+        data: {
+          organizationId: form.organizationId,
+          customerName,
+          customerEmail,
+          subject,
+          status: 'open',
+          priority: 'medium',
+          metadata: {
+            source: 'form',
+            formId: form.id,
+            formName: form.name,
+            submissionId: submission.id,
+          },
+          messages: {
+            create: {
+              senderType: 'customer',
+              content: messageContent || 'Form submission with no content',
+            },
+          },
+        },
+      });
+    } catch (ticketError) {
+      // Log error but don't fail the submission
+      console.error('Failed to create ticket from form submission:', ticketError);
+    }
 
     res.status(201).json({
       success: true,
