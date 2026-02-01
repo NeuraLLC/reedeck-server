@@ -64,11 +64,55 @@ export class TelegramIntegration {
   }
 
   /**
-   * Verify webhook signature
+   * Verify webhook signature with optional secret token
+   * Telegram supports X-Telegram-Bot-Api-Secret-Token header for webhook validation
    */
-  static verifyWebhookSignature(botToken: string, data: any): boolean {
-    // Telegram doesn't use signature verification, but we can validate the structure
-    return data && typeof data === 'object' && 'update_id' in data;
+  static verifyWebhookSignature(
+    botToken: string,
+    data: any,
+    secretToken?: string,
+    receivedToken?: string
+  ): boolean {
+    // Validate webhook structure
+    if (!data || typeof data !== 'object' || !('update_id' in data)) {
+      return false;
+    }
+
+    // If secret token is configured, verify it matches
+    if (secretToken && receivedToken) {
+      return secretToken === receivedToken;
+    }
+
+    // Otherwise just validate structure
+    return true;
+  }
+
+  /**
+   * Get user info from Telegram API
+   */
+  static async getUserInfo(
+    credentials: string,
+    userId: number
+  ): Promise<{ id: number; firstName: string; lastName?: string; username?: string }> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://api.telegram.org/bot${decrypted.bot_token}/getChat`,
+      {
+        params: { chat_id: userId },
+      }
+    );
+
+    if (!response.data.ok) {
+      throw new Error('Failed to get user info');
+    }
+
+    return {
+      id: response.data.result.id,
+      firstName: response.data.result.first_name,
+      lastName: response.data.result.last_name,
+      username: response.data.result.username,
+    };
   }
 
   /**

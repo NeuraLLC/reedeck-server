@@ -246,55 +246,177 @@ router.post('/slack', async (req: Request, res: Response) => {
 
 /**
  * Telegram webhook handler
+ * Handles incoming messages from Telegram with conversation threading and AI integration
  */
 router.post('/telegram', async (req: Request, res: Response) => {
+  console.log('[TELEGRAM WEBHOOK] Received:', JSON.stringify({
+    updateId: req.body.update_id,
+    hasMessage: !!req.body.message,
+    messageType: req.body.message?.text ? 'text' : req.body.message?.photo ? 'photo' : 'other',
+  }));
+
+  logger.info('Telegram webhook received', {
+    updateId: req.body.update_id,
+    hasMessage: !!req.body.message,
+  });
+
   try {
     const update = req.body;
 
+    console.log('[TELEGRAM] Verifying webhook structure...');
     // Verify webhook structure
     if (!TelegramIntegration.verifyWebhookSignature('', update)) {
+      console.log('[TELEGRAM] ❌ Invalid webhook data');
       return res.status(401).json({ error: 'Invalid webhook data' });
     }
+    console.log('[TELEGRAM] ✅ Webhook structure verified');
 
     // Handle incoming message
     if (update.message) {
       const message = update.message;
 
-      // Find the source connection for Telegram
-      // Note: We can't easily identify which bot this is from the webhook,
-      // so we'll get the first active Telegram connection
+      console.log('[TELEGRAM] Message details:', JSON.stringify({
+        hasText: !!message.text,
+        hasFrom: !!message.from,
+        isBot: message.from?.is_bot,
+        chatId: message.chat?.id,
+        userId: message.from?.id,
+      }));
+
+      // Filter: only process actual user messages (not bots, must have text)
+      if (!message.text || !message.from || message.from.is_bot) {
+        console.log('[TELEGRAM] ⏭️  Message filtered out (bot or no text)');
+        return res.json({ ok: true });
+      }
+
+      console.log('[TELEGRAM] ✅ Message passed filters, processing...');
+
+      // Find the source connection for this specific bot
+      // Match by botId from the metadata to support multiple bots
+      console.log('[TELEGRAM] Looking for source connection...');
       const sourceConnection = await prisma.sourceConnection.findFirst({
         where: {
-          sourceType: 'Telegram',
+          sourceType: {
+            equals: 'Telegram',
+            mode: 'insensitive',
+          },
           isActive: true,
+          // For now, we still get the first active connection
+          // In future, we could match by chat.id or implement bot-specific routing
         },
       });
 
-      if (sourceConnection) {
-        // Store incoming message as ticket with message
+      if (!sourceConnection) {
+        console.log('[TELEGRAM] ❌ No source connection found');
+        return res.json({ ok: true });
+      }
+
+      console.log('[TELEGRAM] ✅ Source connection found:', sourceConnection.id);
+
+      // Prepare customer info
+      const customerName = message.from.first_name + (message.from.last_name ? ` ${message.from.last_name}` : '');
+      const customerEmail = message.from.username
+        ? `${message.from.username}@telegram.local`
+        : `user${message.from.id}@telegram.local`;
+      const chatId = message.chat.id;
+
+      console.log('[TELEGRAM] Customer info:', { customerName, customerEmail, chatId });
+
+      // Conversation threading: check for an existing open ticket from the same user in the same chat
+      console.log('[TELEGRAM] Checking for existing ticket...', { customerEmail, chatId });
+      const existingTicket = await prisma.ticket.findFirst({
+        where: {
+          organizationId: sourceConnection.organizationId,
+          sourceId: sourceConnection.id,
+          customerEmail,
+          status: { in: ['open', 'in_progress'] },
+          metadata: {
+            path: ['telegramChatId'],
+            equals: chatId.toString(),
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (existingTicket) {
+        console.log('[TELEGRAM] ✅ Found existing ticket:', existingTicket.id);
+        // Add message to existing ticket conversation
+        await prisma.ticketMessage.create({
+          data: {
+            ticketId: existingTicket.id,
+            senderType: 'customer',
+            content: message.text,
+          },
+        });
+
+        // Update ticket to re-open if it was in progress
+        await prisma.ticket.update({
+          where: { id: existingTicket.id },
+          data: { updatedAt: new Date() },
+        });
+
+        // Re-trigger AI processing for the new message
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: existingTicket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
+      } else {
+        console.log('[TELEGRAM] Creating new ticket...');
+        // Create new ticket with Telegram metadata for return communication
         const ticket = await prisma.ticket.create({
           data: {
             organizationId: sourceConnection.organizationId,
             sourceId: sourceConnection.id,
-            customerName: message.from.first_name + (message.from.last_name ? ` ${message.from.last_name}` : ''),
-            customerEmail: message.from.username ? `${message.from.username}@telegram.local` : `user${message.from.id}@telegram.local`,
-            subject: `Telegram message from ${message.from.first_name}`,
+            customerName,
+            customerEmail,
+            subject: `Telegram message from ${customerName}`,
             status: 'open',
             priority: 'medium',
+            metadata: {
+              source: 'telegram',
+              telegramChatId: chatId.toString(),
+              telegramUserId: message.from.id.toString(),
+              telegramUsername: message.from.username,
+              telegramMessageId: message.message_id.toString(),
+            },
             messages: {
               create: {
                 senderType: 'customer',
-                content: message.text || '',
+                content: message.text,
               },
             },
           },
         });
+        console.log('[TELEGRAM] ✅ Ticket created:', ticket.id);
+
+        // Trigger autonomous AI processing if enabled
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: ticket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
       }
     }
 
     res.json({ ok: true });
   } catch (error) {
-    console.error('Telegram webhook error:', error);
+    console.error('[TELEGRAM] ❌ ERROR:', error);
+    logger.error('Telegram webhook error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -572,30 +694,215 @@ router.post('/gmail', async (req: Request, res: Response) => {
 
 /**
  * Discord webhook handler
+ * Handles incoming messages from Discord with conversation threading and AI integration
  */
 router.post('/discord', async (req: Request, res: Response) => {
+  console.log('[DISCORD WEBHOOK] Received:', JSON.stringify({
+    type: req.body.type,
+    guildId: req.body.guild_id,
+    hasMessage: !!req.body.d?.content,
+  }));
+
+  logger.info('Discord webhook received', {
+    type: req.body.type,
+    guildId: req.body.guild_id,
+  });
+
   try {
     const signature = req.headers['x-signature-ed25519'] as string;
     const timestamp = req.headers['x-signature-timestamp'] as string;
     const body = JSON.stringify(req.body);
 
+    console.log('[DISCORD] Verifying signature...');
     // Verify webhook signature
     if (!signature || !timestamp) {
+      console.log('[DISCORD] ❌ Missing signature headers');
       return res.status(401).json({ error: 'Missing signature headers' });
     }
 
-    // Handle different interaction types
-    const { type, data } = req.body;
+    const { DiscordIntegration } = require('../services/integrations');
+    if (!DiscordIntegration.verifyWebhookSignature(signature, timestamp, body)) {
+      console.log('[DISCORD] ❌ Signature verification failed');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    console.log('[DISCORD] ✅ Signature verified');
+
+    const { type, d, guild_id } = req.body;
 
     // Type 1: Ping (verification)
     if (type === 1) {
+      console.log('[DISCORD] Ping verification');
       return res.json({ type: 1 });
     }
 
-    // Type 2: Application Command
+    // Type 0: MESSAGE_CREATE event
+    if (type === 0 && d) {
+      const message = d;
+
+      console.log('[DISCORD] Message details:', JSON.stringify({
+        hasContent: !!message.content,
+        hasAuthor: !!message.author,
+        isBot: message.author?.bot,
+        channelId: message.channel_id,
+        authorId: message.author?.id,
+      }));
+
+      // Filter: only process actual user messages (not bots)
+      if (!message.content || !message.author || message.author.bot) {
+        console.log('[DISCORD] ⏭️  Message filtered out (bot or no content)');
+        return res.json({ type: 1 });
+      }
+
+      console.log('[DISCORD] ✅ Message passed filters, processing...');
+
+      // Find the source connection for this Discord guild
+      console.log('[DISCORD] Looking for source connection with guildId:', guild_id);
+      const sourceConnection = await prisma.sourceConnection.findFirst({
+        where: {
+          sourceType: {
+            equals: 'Discord',
+            mode: 'insensitive',
+          },
+          metadata: {
+            path: ['guilds'],
+            array_contains: [{ id: guild_id }],
+          },
+          isActive: true,
+        },
+      });
+
+      if (!sourceConnection) {
+        console.log('[DISCORD] ❌ No source connection found for guildId:', guild_id);
+        return res.json({ type: 1 });
+      }
+
+      console.log('[DISCORD] ✅ Source connection found:', sourceConnection.id);
+
+      // Enrich user info from Discord API
+      let customerName = message.author.username;
+      let customerEmail = `${message.author.id}@discord.local`;
+      console.log('[DISCORD] Fetching user info for:', message.author.id);
+      try {
+        const userInfo = await DiscordIntegration.getUserInfo(
+          sourceConnection.credentials as string,
+          message.author.id
+        );
+        customerName = `${userInfo.username}#${userInfo.discriminator}`;
+        customerEmail = userInfo.email || `${message.author.id}@discord.local`;
+        console.log('[DISCORD] ✅ User info fetched:', { customerName, customerEmail });
+      } catch (err) {
+        console.error('[DISCORD] ❌ Failed to fetch user info:', err);
+      }
+
+      // Get channel name for subject
+      let channelName = message.channel_id;
+      try {
+        const channelInfo = await DiscordIntegration.getChannelInfo(
+          sourceConnection.credentials as string,
+          message.channel_id
+        );
+        channelName = channelInfo.name;
+      } catch (err) {
+        // Keep channel ID as fallback
+      }
+
+      // Conversation threading: check for an existing open ticket from the same user in the same channel
+      console.log('[DISCORD] Checking for existing ticket...', { customerEmail, channel: message.channel_id });
+      const existingTicket = await prisma.ticket.findFirst({
+        where: {
+          organizationId: sourceConnection.organizationId,
+          sourceId: sourceConnection.id,
+          customerEmail,
+          status: { in: ['open', 'in_progress'] },
+          metadata: {
+            path: ['discordChannelId'],
+            equals: message.channel_id,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (existingTicket) {
+        console.log('[DISCORD] ✅ Found existing ticket:', existingTicket.id);
+        // Add message to existing ticket conversation
+        await prisma.ticketMessage.create({
+          data: {
+            ticketId: existingTicket.id,
+            senderType: 'customer',
+            content: message.content,
+          },
+        });
+
+        // Update ticket to re-open if it was in progress
+        await prisma.ticket.update({
+          where: { id: existingTicket.id },
+          data: { updatedAt: new Date() },
+        });
+
+        // Re-trigger AI processing for the new message
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: existingTicket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
+      } else {
+        console.log('[DISCORD] Creating new ticket...');
+        // Create new ticket with Discord metadata for return communication
+        const ticket = await prisma.ticket.create({
+          data: {
+            organizationId: sourceConnection.organizationId,
+            sourceId: sourceConnection.id,
+            customerName,
+            customerEmail,
+            subject: `Discord message from #${channelName}`,
+            status: 'open',
+            priority: 'medium',
+            metadata: {
+              source: 'discord',
+              discordChannelId: message.channel_id,
+              discordUserId: message.author.id,
+              discordGuildId: guild_id,
+              discordMessageId: message.id,
+            },
+            messages: {
+              create: {
+                senderType: 'customer',
+                content: message.content,
+              },
+            },
+          },
+        });
+        console.log('[DISCORD] ✅ Ticket created:', ticket.id);
+
+        // Trigger autonomous AI processing if enabled
+        const organization = await prisma.organization.findUnique({
+          where: { id: sourceConnection.organizationId },
+          select: { settings: true },
+        });
+        const aiSettings = (organization?.settings as any)?.autonomousAI;
+        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+          const { ticketProcessingQueue } = require('../config/queue');
+          ticketProcessingQueue.add({
+            ticketId: ticket.id,
+            organizationId: sourceConnection.organizationId,
+          });
+        }
+      }
+
+      return res.json({ type: 1 });
+    }
+
+    // Type 2: Application Command (slash commands)
     if (type === 2) {
-      // Handle slash commands
-      res.json({
+      console.log('[DISCORD] Application command received');
+      return res.json({
         type: 4,
         data: {
           content: 'Message received!',
@@ -603,9 +910,10 @@ router.post('/discord', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ ok: true });
+    res.json({ type: 1 });
   } catch (error) {
-    console.error('Discord webhook error:', error);
+    console.error('[DISCORD] ❌ ERROR:', error);
+    logger.error('Discord webhook error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

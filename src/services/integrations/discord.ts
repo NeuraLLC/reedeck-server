@@ -69,15 +69,93 @@ export class DiscordIntegration {
   }
 
   /**
-   * Verify webhook signature
+   * Verify webhook signature using Ed25519
    */
   static verifyWebhookSignature(signature: string, timestamp: string, body: string): boolean {
-    const crypto = require('crypto');
-    const publicKey = process.env.DISCORD_PUBLIC_KEY!;
+    try {
+      const crypto = require('crypto');
+      const publicKey = process.env.DISCORD_PUBLIC_KEY!;
 
-    // Discord uses Ed25519 signature verification
-    // This is a simplified version - in production, use a proper Ed25519 library
-    return true; // TODO: Implement proper Ed25519 verification
+      if (!publicKey) {
+        console.error('[Discord] PUBLIC_KEY not configured');
+        return false;
+      }
+
+      // Discord uses Ed25519 signature verification
+      // Signature = Ed25519(timestamp + body)
+      const message = timestamp + body;
+
+      // Convert hex strings to buffers
+      const signatureBuffer = Buffer.from(signature, 'hex');
+      const publicKeyBuffer = Buffer.from(publicKey, 'hex');
+      const messageBuffer = Buffer.from(message);
+
+      // Verify using Node.js built-in crypto (requires Node 12+)
+      return crypto.verify(
+        null,
+        messageBuffer,
+        {
+          key: publicKeyBuffer,
+          format: 'der',
+          type: 'spki'
+        },
+        signatureBuffer
+      );
+    } catch (error) {
+      console.error('[Discord] Signature verification error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get user info from Discord API
+   */
+  static async getUserInfo(
+    credentials: string,
+    userId: string
+  ): Promise<{ username: string; discriminator: string; email?: string; avatar?: string }> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://discord.com/api/v10/users/${userId}`,
+      {
+        headers: {
+          Authorization: `Bot ${decrypted.bot_token}`,
+        },
+      }
+    );
+
+    return {
+      username: response.data.username,
+      discriminator: response.data.discriminator,
+      email: response.data.email,
+      avatar: response.data.avatar,
+    };
+  }
+
+  /**
+   * Get channel info from Discord API
+   */
+  static async getChannelInfo(
+    credentials: string,
+    channelId: string
+  ): Promise<{ name: string; type: number; guildId?: string }> {
+    const decrypted = decryptObject(credentials);
+
+    const response = await axios.get(
+      `https://discord.com/api/v10/channels/${channelId}`,
+      {
+        headers: {
+          Authorization: `Bot ${decrypted.bot_token}`,
+        },
+      }
+    );
+
+    return {
+      name: response.data.name,
+      type: response.data.type,
+      guildId: response.data.guild_id,
+    };
   }
 
   /**
