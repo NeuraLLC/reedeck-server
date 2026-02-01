@@ -366,3 +366,49 @@ model SourceConnection {
   @@unique([organizationId, sourceType])
   @@map("source_connections")
 }
+
+model WidgetConfig {
+  id              String  @id @default(uuid())
+  organizationId  String  @unique @map("organization_id")
+  primaryColor    String  @default("#4D40E6") @map("primary_color")
+  position        String  @default("bottom-right")
+  greeting        String  @default("Hi! How can we help?")
+  offlineMessage  String  @default("We're away. Leave a message!") @map("offline_message")
+  showLogo        Boolean @default(true) @map("show_logo")
+  enabled         Boolean @default(true)
+  requireEmail    Boolean @default(true) @map("require_email")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("widget_configs")
+}
+
+model WidgetSession {
+  id          String    @id @default(uuid())
+  visitorId   String    @map("visitor_id")
+  customerId  String?   @map("customer_id")
+  ticketId    String?   @map("ticket_id")
+  metadata    Json      @default("{}")
+  lastSeen    DateTime  @map("last_seen")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  messages WidgetMessage[]
+
+  @@index([visitorId])
+  @@index([ticketId])
+  @@map("widget_sessions")
+}
+
+model WidgetMessage {
+  id         String   @id @default(uuid())
+  sessionId  String   @map("session_id")
+  senderType String   @map("sender_type")
+  content    String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  session WidgetSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@map("widget_messages")
+}

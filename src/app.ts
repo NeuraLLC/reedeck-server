@@ -32,6 +32,7 @@ import webhooksRoutes from './routes/webhooks';
 import publicFormsRoutes from './routes/publicForms';
 import autonomousAIRoutes from './routes/autonomousAI';
 import demoRoutes from './routes/demo';
+import widgetRoutes from './routes/widget';
 
 // Load environment variables
 // Load environment variables
@@ -132,6 +133,7 @@ app.use('/api/integrations/webhooks', webhooksRoutes);
 // Public routes (no rate limiting needed, handled internally)
 app.use('/api/public/forms', publicFormsRoutes);
 app.use('/api/demo', demoRoutes);
+app.use('/api/widget', widgetRoutes);
 
 // API routes
 app.use('/api/auth', authRoutes);
