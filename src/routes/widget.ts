@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../config/database';
-import { authenticateToken } from '../middleware/auth';
-import { v4 as uuidv4 } from 'uuid';
+import { authenticate } from '../middleware/auth';
+import { AuthRequest } from '../types';
 
 const router = Router();
 
@@ -48,9 +48,9 @@ router.get('/config/:organizationId', async (req: Request, res: Response) => {
  * PUT /widget/config
  * Protected endpoint to update widget configuration
  */
-router.put('/config', authenticateToken, async (req: Request, res: Response) => {
+router.put('/config', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { organizationId } = req.user!;
+    const { organizationId } = req.body;
     const {
       primaryColor,
       position,
