@@ -43,14 +43,31 @@ export async function sendResponseToSource(
     switch (metadata.source) {
       case 'slack': {
         if (!metadata.slackChannelId) break;
+
+        // Find the most recent customer message with a Slack ts so the reply
+        // appears under the correct thread on Slack (not the original message).
+        const latestCustomerMsg = await prisma.ticketMessage.findFirst({
+          where: {
+            ticketId,
+            senderType: 'customer',
+            metadata: { path: ['slackMessageTs'], not: 'null' },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { metadata: true },
+        });
+
+        const threadTs =
+          (latestCustomerMsg?.metadata as any)?.slackMessageTs ||
+          metadata.slackMessageTs;
+
         await SlackIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.slackChannelId,
           responseText,
-          metadata.slackMessageTs // Reply in thread if available
+          threadTs
         );
         logger.info(
-          `Response sent to Slack channel ${metadata.slackChannelId} for ticket ${ticketId}`
+          `Response sent to Slack channel ${metadata.slackChannelId} (thread ${threadTs}) for ticket ${ticketId}`
         );
         return true;
       }

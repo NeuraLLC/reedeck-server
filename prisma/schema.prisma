@@ -161,6 +161,7 @@ model TicketMessage {
   senderType String   @map("sender_type")
   content    String
   isInternal Boolean  @default(false) @map("is_internal")
+  metadata   Json?    @default("{}")
   createdAt  DateTime @default(now()) @map("created_at")
 
   ticket Ticket @relation(fields: [ticketId], references: [id])

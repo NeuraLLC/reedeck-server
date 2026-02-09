@@ -160,19 +160,24 @@ router.post('/slack', async (req: Request, res: Response) => {
 
       if (existingTicket) {
         console.log('[SLACK] ✅ Found existing ticket:', existingTicket.id);
-        // Add message to existing ticket conversation
+        // Add message to existing ticket conversation with per-message Slack ts
         await prisma.ticketMessage.create({
           data: {
             ticketId: existingTicket.id,
             senderType: 'customer',
             content: event.text,
+            metadata: { slackMessageTs: event.ts },
           },
         });
 
-        // Update ticket to re-open if it was in progress
+        // Update ticket metadata with latest message ts so replies target the newest thread
+        const existingMeta = (existingTicket.metadata as any) || {};
         await prisma.ticket.update({
           where: { id: existingTicket.id },
-          data: { updatedAt: new Date() },
+          data: {
+            updatedAt: new Date(),
+            metadata: { ...existingMeta, slackMessageTs: event.ts },
+          },
         });
 
         // Re-trigger AI processing for the new message
@@ -211,6 +216,7 @@ router.post('/slack', async (req: Request, res: Response) => {
               create: {
                 senderType: 'customer',
                 content: event.text,
+                metadata: { slackMessageTs: event.ts },
               },
             },
           },
