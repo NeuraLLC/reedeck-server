@@ -7,6 +7,7 @@ import prisma from '../config/database';
 import { AppError } from '../middleware/errorHandler';
 import { ticketProcessingQueue } from '../config/queue';
 import { sendResponseToSource } from '../services/channelRelay';
+import { supabaseAdmin } from '../config/supabase';
 
 const router = Router();
 
@@ -262,6 +263,15 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response, next: NextF
     if (!isInternal) {
       sendResponseToSource(req.params.id, content).catch((err) => {
         console.error('Failed to relay message to source:', err);
+      });
+    }
+
+    // Broadcast realtime event so other dashboard viewers see the new message
+    if (ticket.organizationId) {
+      supabaseAdmin.channel(`org:${ticket.organizationId}`).send({
+        type: 'broadcast',
+        event: 'ticket_updated',
+        payload: { ticketId: req.params.id },
       });
     }
 

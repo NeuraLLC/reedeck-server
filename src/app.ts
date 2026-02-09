@@ -33,6 +33,7 @@ import publicFormsRoutes from './routes/publicForms';
 import autonomousAIRoutes from './routes/autonomousAI';
 import demoRoutes from './routes/demo';
 import widgetRoutes from './routes/widget';
+import uploadsRoutes from './routes/uploads';
 
 // Load environment variables
 // Load environment variables
@@ -149,6 +150,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/integrations', integrationsRoutes);
 app.use('/api/autonomous-ai', autonomousAIRoutes);
+app.use('/api/uploads', uploadsRoutes);
 
 // 404 handler
 app.use((req, res) => {

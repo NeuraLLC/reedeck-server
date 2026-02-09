@@ -10,6 +10,7 @@ import {
 } from '../services/integrations';
 import prisma from '../config/database';
 import logger from '../config/logger';
+import { supabaseAdmin } from '../config/supabase';
 
 const router = Router();
 
@@ -180,6 +181,13 @@ router.post('/slack', async (req: Request, res: Response) => {
           },
         });
 
+        // Broadcast realtime event for dashboard
+        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+          type: 'broadcast',
+          event: 'ticket_updated',
+          payload: { ticketId: existingTicket.id },
+        });
+
         // Re-trigger AI processing for the new message
         const organization = await prisma.organization.findUnique({
           where: { id: sourceConnection.organizationId },
@@ -222,6 +230,13 @@ router.post('/slack', async (req: Request, res: Response) => {
           },
         });
         console.log('[SLACK] ✅ Ticket created:', ticket.id);
+
+        // Broadcast realtime event for dashboard
+        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+          type: 'broadcast',
+          event: 'ticket_created',
+          payload: { ticketId: ticket.id },
+        });
 
         // Trigger autonomous AI processing if enabled
         const organization = await prisma.organization.findUnique({
