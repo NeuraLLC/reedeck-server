@@ -13,6 +13,7 @@ import './ticketProcessor';
 import './emailProcessor';
 import './recurringIssueProcessor';
 import './analyticsProcessor';
+import './discordBot';
 
 logger.info('All background workers initialized successfully');
 
