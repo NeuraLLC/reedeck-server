@@ -159,20 +159,25 @@ export class DiscordIntegration {
   }
 
   /**
-   * Send message to Discord channel
+   * Send message to Discord channel, optionally as a reply to a specific message
    */
   static async sendMessage(
     credentials: string,
     channelId: string,
-    content: string
-  ): Promise<void> {
+    content: string,
+    replyToMessageId?: string
+  ): Promise<{ id: string }> {
     const decrypted = decryptObject(credentials);
 
-    await axios.post(
+    const payload: any = { content };
+
+    if (replyToMessageId) {
+      payload.message_reference = { message_id: replyToMessageId };
+    }
+
+    const response = await axios.post(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
-      {
-        content,
-      },
+      payload,
       {
         headers: {
           Authorization: `Bot ${decrypted.bot_token}`,
@@ -180,6 +185,8 @@ export class DiscordIntegration {
         },
       }
     );
+
+    return { id: response.data.id };
   }
 
   /**

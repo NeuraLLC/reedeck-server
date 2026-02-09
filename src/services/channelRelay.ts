@@ -113,13 +113,31 @@ export async function sendResponseToSource(
       }
       case 'discord': {
         if (!metadata.discordChannelId) break;
+
+        // Find the most recent customer message with a Discord message ID so the
+        // reply appears as a reply to the correct message on Discord.
+        const latestDiscordMsg = await prisma.ticketMessage.findFirst({
+          where: {
+            ticketId,
+            senderType: 'customer',
+            metadata: { path: ['discordMessageId'], not: 'null' },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { metadata: true },
+        });
+
+        const replyToMessageId =
+          (latestDiscordMsg?.metadata as any)?.discordMessageId ||
+          metadata.discordMessageId;
+
         await DiscordIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.discordChannelId,
-          responseText
+          responseText,
+          replyToMessageId
         );
         logger.info(
-          `Response sent to Discord channel ${metadata.discordChannelId} for ticket ${ticketId}`
+          `Response sent to Discord channel ${metadata.discordChannelId} (reply to ${replyToMessageId}) for ticket ${ticketId}`
         );
         return true;
       }
