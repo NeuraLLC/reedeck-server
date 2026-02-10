@@ -382,16 +382,16 @@ router.post('/telegram', async (req: Request, res: Response) => {
       },
     });
 
-    console.log('[TELEGRAM] Source connection found:', sourceConnection ? sourceConnection.id : 'NONE');
+    logger.info('[TELEGRAM] Source connection found:', sourceConnection ? sourceConnection.id : 'NONE');
     if (sourceConnection) {
-      console.log('[TELEGRAM] Source metadata:', JSON.stringify(sourceConnection.metadata));
+      logger.info('[TELEGRAM] Source metadata:', JSON.stringify(sourceConnection.metadata));
     } else {
       // Log all Telegram connections to see what's stored
       const allTelegram = await prisma.sourceConnection.findMany({
         where: { sourceType: { equals: 'Telegram', mode: 'insensitive' }, isActive: true },
         select: { id: true, metadata: true },
       });
-      console.log('[TELEGRAM] All Telegram connections:', JSON.stringify(allTelegram));
+      logger.info('[TELEGRAM] All Telegram connections:', JSON.stringify(allTelegram));
     }
 
     if (!sourceConnection) {
