@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth';
 import { attachOrganization } from '../middleware/organization';
 import { AuthRequest } from '../types';
 import prisma from '../config/database';
+import logger from '../config/logger';
 import { AppError } from '../middleware/errorHandler';
 import { sendResponseToSource } from '../services/channelRelay';
 import { supabaseAdmin } from '../config/supabase';
@@ -143,63 +144,139 @@ router.post('/:id/mark-read', async (req: AuthRequest, res: Response, next: Next
   }
 });
 
-// Create ticket (single or broadcast)
+// Create internal ticket
 router.post('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const {
-      customerName,
-      customerEmail,
-      subject,
-      priority,
-      message,
-      sourceId,
-      sourceIds,
-      type,
-    } = req.body;
+    const { subject, priority, message, sourceId, type } = req.body;
 
-    // Broadcast mode: create one ticket per source
-    const sources = sourceIds && sourceIds.length > 0 ? sourceIds : sourceId ? [sourceId] : [null];
-
-    const tickets = [];
-
-    for (const srcId of sources) {
-      const ticket = await prisma.ticket.create({
-        data: {
-          organizationId: req.organizationId!,
-          ...(srcId && { sourceId: srcId }),
-          customerName: customerName || 'Internal',
-          customerEmail: customerEmail || `agent@${req.organizationId}.internal`,
-          subject,
-          priority: priority || 'medium',
-          status: 'open',
-          metadata: srcId
-            ? { source: 'manual', type: type || 'support' }
-            : { type: type || 'support' },
-          messages: {
-            create: {
-              senderType: 'agent',
-              content: message,
-              userId: req.userId,
-            },
+    const ticket = await prisma.ticket.create({
+      data: {
+        organizationId: req.organizationId!,
+        ...(sourceId && { sourceId }),
+        customerName: 'Internal',
+        customerEmail: `agent@${req.organizationId}.internal`,
+        subject,
+        priority: priority || 'medium',
+        status: 'open',
+        metadata: { type: type || 'support' },
+        messages: {
+          create: {
+            senderType: 'agent',
+            content: message,
+            userId: req.userId,
           },
         },
-        include: {
-          messages: true,
+      },
+      include: {
+        messages: true,
+      },
+    });
+
+    // Broadcast realtime event
+    supabaseAdmin.channel(`org:${req.organizationId}`).send({
+      type: 'broadcast',
+      event: 'ticket_created',
+      payload: { ticketId: ticket.id },
+    });
+
+    res.status(201).json(ticket);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Broadcast message to all known channels/groups for selected sources
+router.post('/broadcast', async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { sourceIds, message } = req.body;
+
+    if (!sourceIds || sourceIds.length === 0 || !message) {
+      return res.status(400).json({ error: 'sourceIds and message are required' });
+    }
+
+    const results: { sourceId: string; sourceType: string; channels: number; errors: number }[] = [];
+
+    for (const sourceId of sourceIds) {
+      const sourceConnection = await prisma.sourceConnection.findFirst({
+        where: {
+          id: sourceId,
+          organizationId: req.organizationId!,
+          isActive: true,
         },
       });
 
-      tickets.push(ticket);
+      if (!sourceConnection) continue;
 
-      // Broadcast realtime event
-      supabaseAdmin.channel(`org:${req.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_created',
-        payload: { ticketId: ticket.id },
+      const sourceType = sourceConnection.sourceType.toLowerCase();
+
+      // Find all unique channels/chats from existing tickets for this source
+      let channelField: string;
+      if (sourceType === 'slack') channelField = 'slackChannelId';
+      else if (sourceType === 'discord') channelField = 'discordChannelId';
+      else if (sourceType === 'telegram') channelField = 'telegramChatId';
+      else continue; // Skip unsupported platforms for broadcast
+
+      const tickets = await prisma.ticket.findMany({
+        where: {
+          organizationId: req.organizationId!,
+          sourceId,
+          metadata: { path: [channelField], not: 'null' },
+        },
+        select: { metadata: true },
+        distinct: ['metadata'],
+      });
+
+      // Extract unique channel IDs
+      const channelIds = new Set<string>();
+      for (const t of tickets) {
+        const meta = t.metadata as any;
+        if (meta?.[channelField]) channelIds.add(meta[channelField]);
+      }
+
+      let sent = 0;
+      let errors = 0;
+
+      for (const channelId of channelIds) {
+        try {
+          if (sourceType === 'slack') {
+            const { SlackIntegration } = require('../services/integrations');
+            await SlackIntegration.sendMessage(
+              sourceConnection.credentials as string,
+              channelId,
+              message
+            );
+          } else if (sourceType === 'discord') {
+            const { DiscordIntegration } = require('../services/integrations');
+            await DiscordIntegration.sendMessage(
+              sourceConnection.credentials as string,
+              channelId,
+              message
+            );
+          } else if (sourceType === 'telegram') {
+            const { TelegramIntegration } = require('../services/integrations');
+            await TelegramIntegration.sendMessage(
+              sourceConnection.credentials as string,
+              channelId,
+              message
+            );
+          }
+          sent++;
+        } catch (err) {
+          logger.error(`[BROADCAST] Failed to send to ${sourceType} channel ${channelId}:`, err);
+          errors++;
+        }
+      }
+
+      results.push({
+        sourceId,
+        sourceType: sourceConnection.sourceType,
+        channels: sent,
+        errors,
       });
     }
 
-    // Return single ticket or array depending on mode
-    res.status(201).json(tickets.length === 1 ? tickets[0] : tickets);
+    const totalSent = results.reduce((sum, r) => sum + r.channels, 0);
+    res.json({ success: true, totalChannels: totalSent, results });
   } catch (error) {
     next(error);
   }
