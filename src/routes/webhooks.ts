@@ -12,6 +12,8 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { supabaseAdmin } from '../config/supabase';
 import { processDiscordMessage } from '../services/discordMessageProcessor';
+import { validateSetupCode } from '../services/telegramSetup';
+import { encryptObject } from '../services/encryption';
 
 const router = Router();
 
@@ -271,12 +273,6 @@ router.post('/slack', async (req: Request, res: Response) => {
  * Handles incoming messages from Telegram with conversation threading and AI integration
  */
 router.post('/telegram', async (req: Request, res: Response) => {
-  console.log('[TELEGRAM WEBHOOK] Received:', JSON.stringify({
-    updateId: req.body.update_id,
-    hasMessage: !!req.body.message,
-    messageType: req.body.message?.text ? 'text' : req.body.message?.photo ? 'photo' : 'other',
-  }));
-
   logger.info('Telegram webhook received', {
     updateId: req.body.update_id,
     hasMessage: !!req.body.message,
@@ -285,179 +281,221 @@ router.post('/telegram', async (req: Request, res: Response) => {
   try {
     const update = req.body;
 
-    console.log('[TELEGRAM] Verifying webhook structure...');
     // Verify webhook structure
     if (!TelegramIntegration.verifyWebhookSignature('', update)) {
-      console.log('[TELEGRAM] ❌ Invalid webhook data');
       return res.status(401).json({ error: 'Invalid webhook data' });
     }
-    console.log('[TELEGRAM] ✅ Webhook structure verified');
 
     // Handle incoming message
-    if (update.message) {
-      const message = update.message;
+    if (!update.message) return res.json({ ok: true });
 
-      console.log('[TELEGRAM] Message details:', JSON.stringify({
-        hasText: !!message.text,
-        hasFrom: !!message.from,
-        isBot: message.from?.is_bot,
-        chatId: message.chat?.id,
-        userId: message.from?.id,
-      }));
+    const message = update.message;
 
-      // Filter: only process actual user messages (not bots, must have text)
-      if (!message.text || !message.from || message.from.is_bot) {
-        console.log('[TELEGRAM] ⏭️  Message filtered out (bot or no text)');
+    // Filter: only process actual user messages (not bots, must have text)
+    if (!message.text || !message.from || message.from.is_bot) {
+      return res.json({ ok: true });
+    }
+
+    const chatId = message.chat.id;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN!;
+
+    // ── /connect CODE — link this Telegram group to an organization ──
+    const connectMatch = message.text.match(/^\/connect\s+([A-Za-z0-9]+)/);
+    if (connectMatch) {
+      const code = connectMatch[1];
+      const organizationId = validateSetupCode(code);
+
+      if (!organizationId) {
+        await TelegramIntegration.sendMessage(
+          encryptObject({ bot_token: botToken }),
+          chatId,
+          'Invalid or expired setup code. Please generate a new one from your Reedeck dashboard.'
+        );
         return res.json({ ok: true });
       }
 
-      console.log('[TELEGRAM] ✅ Message passed filters, processing...');
-
-      // Find the source connection for this specific bot
-      // Match by botId from the metadata to support multiple bots
-      console.log('[TELEGRAM] Looking for source connection...');
-      const sourceConnection = await prisma.sourceConnection.findFirst({
+      // Check if this org already has Telegram connected
+      const existing = await prisma.sourceConnection.findFirst({
         where: {
-          sourceType: {
-            equals: 'Telegram',
-            mode: 'insensitive',
+          organizationId,
+          sourceType: { equals: 'Telegram', mode: 'insensitive' },
+        },
+      });
+
+      if (existing) {
+        await TelegramIntegration.sendMessage(
+          encryptObject({ bot_token: botToken }),
+          chatId,
+          'Telegram is already connected for your organization.'
+        );
+        return res.json({ ok: true });
+      }
+
+      // Create source connection using the platform's bot token
+      const credentials = encryptObject({ bot_token: botToken });
+
+      // Get bot info for metadata
+      const botInfo = await TelegramIntegration.validateToken(botToken);
+
+      await prisma.sourceConnection.create({
+        data: {
+          organizationId,
+          sourceType: 'Telegram',
+          credentials,
+          sourceId: botInfo.sourceId,
+          metadata: {
+            ...botInfo.metadata,
+            chatId: chatId.toString(),
+            chatTitle: message.chat.title || 'Private chat',
           },
           isActive: true,
-          // For now, we still get the first active connection
-          // In future, we could match by chat.id or implement bot-specific routing
         },
       });
 
-      if (!sourceConnection) {
-        console.log('[TELEGRAM] ❌ No source connection found');
-        return res.json({ ok: true });
+      // Set webhook (idempotent — safe to call even if already set)
+      const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || process.env.FRONTEND_URL?.replace('3000', '4001') || 'http://localhost:4001';
+      await TelegramIntegration.setWebhook(
+        credentials,
+        `${webhookBaseUrl}/api/integrations/webhooks/telegram`
+      );
+
+      await TelegramIntegration.sendMessage(
+        credentials,
+        chatId,
+        'Connected! Messages from this group will now appear in your Reedeck dashboard.'
+      );
+
+      logger.info(`Telegram group ${chatId} linked to organization ${organizationId}`);
+      return res.json({ ok: true });
+    }
+
+    // ── Regular message — route to the org that owns this chat ──
+
+    // Find source connection by matching chatId stored in metadata
+    const sourceConnection = await prisma.sourceConnection.findFirst({
+      where: {
+        sourceType: { equals: 'Telegram', mode: 'insensitive' },
+        isActive: true,
+        metadata: { path: ['chatId'], equals: chatId.toString() },
+      },
+    });
+
+    if (!sourceConnection) {
+      // No org linked to this chat — ignore
+      return res.json({ ok: true });
+    }
+
+    // Prepare customer info
+    const customerName = message.from.first_name + (message.from.last_name ? ` ${message.from.last_name}` : '');
+    const customerEmail = message.from.username
+      ? `${message.from.username}@telegram.local`
+      : `user${message.from.id}@telegram.local`;
+
+    // Conversation threading: check for an existing open ticket from the same user in the same chat
+    const existingTicket = await prisma.ticket.findFirst({
+      where: {
+        organizationId: sourceConnection.organizationId,
+        sourceId: sourceConnection.id,
+        customerEmail,
+        status: { in: ['open', 'in_progress'] },
+        metadata: {
+          path: ['telegramChatId'],
+          equals: chatId.toString(),
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingTicket) {
+      // Add message to existing ticket
+      await prisma.ticketMessage.create({
+        data: {
+          ticketId: existingTicket.id,
+          senderType: 'customer',
+          content: message.text,
+          metadata: { telegramMessageId: message.message_id.toString() },
+        },
+      });
+
+      const existingMeta = (existingTicket.metadata as any) || {};
+      await prisma.ticket.update({
+        where: { id: existingTicket.id },
+        data: {
+          updatedAt: new Date(),
+          metadata: { ...existingMeta, telegramMessageId: message.message_id.toString() },
+        },
+      });
+
+      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+        type: 'broadcast',
+        event: 'ticket_updated',
+        payload: { ticketId: existingTicket.id },
+      });
+
+      // Re-trigger AI processing
+      const organization = await prisma.organization.findUnique({
+        where: { id: sourceConnection.organizationId },
+        select: { settings: true },
+      });
+      const aiSettings = (organization?.settings as any)?.autonomousAI;
+      if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+        const { ticketProcessingQueue } = require('../config/queue');
+        ticketProcessingQueue.add({
+          ticketId: existingTicket.id,
+          organizationId: sourceConnection.organizationId,
+        });
       }
-
-      console.log('[TELEGRAM] ✅ Source connection found:', sourceConnection.id);
-
-      // Prepare customer info
-      const customerName = message.from.first_name + (message.from.last_name ? ` ${message.from.last_name}` : '');
-      const customerEmail = message.from.username
-        ? `${message.from.username}@telegram.local`
-        : `user${message.from.id}@telegram.local`;
-      const chatId = message.chat.id;
-
-      console.log('[TELEGRAM] Customer info:', { customerName, customerEmail, chatId });
-
-      // Conversation threading: check for an existing open ticket from the same user in the same chat
-      console.log('[TELEGRAM] Checking for existing ticket...', { customerEmail, chatId });
-      const existingTicket = await prisma.ticket.findFirst({
-        where: {
+    } else {
+      // Create new ticket
+      const ticket = await prisma.ticket.create({
+        data: {
           organizationId: sourceConnection.organizationId,
           sourceId: sourceConnection.id,
+          customerName,
           customerEmail,
-          status: { in: ['open', 'in_progress'] },
+          subject: `Telegram message from ${customerName}`,
+          status: 'open',
+          priority: 'medium',
           metadata: {
-            path: ['telegramChatId'],
-            equals: chatId.toString(),
+            source: 'telegram',
+            telegramChatId: chatId.toString(),
+            telegramUserId: message.from.id.toString(),
+            telegramUsername: message.from.username,
+            telegramMessageId: message.message_id.toString(),
+          },
+          messages: {
+            create: {
+              senderType: 'customer',
+              content: message.text,
+              metadata: { telegramMessageId: message.message_id.toString() },
+            },
           },
         },
-        orderBy: { createdAt: 'desc' },
       });
 
-      if (existingTicket) {
-        console.log('[TELEGRAM] ✅ Found existing ticket:', existingTicket.id);
-        // Add message to existing ticket with per-message Telegram message ID
-        await prisma.ticketMessage.create({
-          data: {
-            ticketId: existingTicket.id,
-            senderType: 'customer',
-            content: message.text,
-            metadata: { telegramMessageId: message.message_id.toString() },
-          },
-        });
+      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+        type: 'broadcast',
+        event: 'ticket_created',
+        payload: { ticketId: ticket.id },
+      });
 
-        // Update ticket metadata with latest message ID so replies target the newest message
-        const existingMeta = (existingTicket.metadata as any) || {};
-        await prisma.ticket.update({
-          where: { id: existingTicket.id },
-          data: {
-            updatedAt: new Date(),
-            metadata: { ...existingMeta, telegramMessageId: message.message_id.toString() },
-          },
+      // Trigger autonomous AI processing if enabled
+      const organization = await prisma.organization.findUnique({
+        where: { id: sourceConnection.organizationId },
+        select: { settings: true },
+      });
+      const aiSettings = (organization?.settings as any)?.autonomousAI;
+      if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
+        const { ticketProcessingQueue } = require('../config/queue');
+        ticketProcessingQueue.add({
+          ticketId: ticket.id,
+          organizationId: sourceConnection.organizationId,
         });
-
-        // Broadcast realtime event for dashboard
-        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-          type: 'broadcast',
-          event: 'ticket_updated',
-          payload: { ticketId: existingTicket.id },
-        });
-
-        // Re-trigger AI processing for the new message
-        const organization = await prisma.organization.findUnique({
-          where: { id: sourceConnection.organizationId },
-          select: { settings: true },
-        });
-        const aiSettings = (organization?.settings as any)?.autonomousAI;
-        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
-          const { ticketProcessingQueue } = require('../config/queue');
-          ticketProcessingQueue.add({
-            ticketId: existingTicket.id,
-            organizationId: sourceConnection.organizationId,
-          });
-        }
-      } else {
-        console.log('[TELEGRAM] Creating new ticket...');
-        // Create new ticket with Telegram metadata for return communication
-        const ticket = await prisma.ticket.create({
-          data: {
-            organizationId: sourceConnection.organizationId,
-            sourceId: sourceConnection.id,
-            customerName,
-            customerEmail,
-            subject: `Telegram message from ${customerName}`,
-            status: 'open',
-            priority: 'medium',
-            metadata: {
-              source: 'telegram',
-              telegramChatId: chatId.toString(),
-              telegramUserId: message.from.id.toString(),
-              telegramUsername: message.from.username,
-              telegramMessageId: message.message_id.toString(),
-            },
-            messages: {
-              create: {
-                senderType: 'customer',
-                content: message.text,
-                metadata: { telegramMessageId: message.message_id.toString() },
-              },
-            },
-          },
-        });
-        console.log('[TELEGRAM] ✅ Ticket created:', ticket.id);
-
-        // Broadcast realtime event for dashboard
-        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-          type: 'broadcast',
-          event: 'ticket_created',
-          payload: { ticketId: ticket.id },
-        });
-
-        // Trigger autonomous AI processing if enabled
-        const organization = await prisma.organization.findUnique({
-          where: { id: sourceConnection.organizationId },
-          select: { settings: true },
-        });
-        const aiSettings = (organization?.settings as any)?.autonomousAI;
-        if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
-          const { ticketProcessingQueue } = require('../config/queue');
-          ticketProcessingQueue.add({
-            ticketId: ticket.id,
-            organizationId: sourceConnection.organizationId,
-          });
-        }
       }
     }
 
     res.json({ ok: true });
   } catch (error) {
-    console.error('[TELEGRAM] ❌ ERROR:', error);
     logger.error('Telegram webhook error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }

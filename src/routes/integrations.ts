@@ -17,6 +17,8 @@ import {
   InstagramIntegration,
   AsanaIntegration,
 } from '../services/integrations';
+import { generateSetupCode } from '../services/telegramSetup';
+import axios from 'axios';
 
 const router = Router();
 
@@ -363,6 +365,64 @@ router.post(
           createdAt: connection.createdAt,
         },
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Telegram setup — generate a setup code so the user can link their group
+router.post(
+  '/telegram/setup',
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      // Check if already connected
+      const existing = await prisma.sourceConnection.findFirst({
+        where: {
+          organizationId: req.organizationId,
+          sourceType: { equals: 'Telegram', mode: 'insensitive' },
+        },
+      });
+      if (existing) {
+        throw new AppError('Telegram is already connected', 400);
+      }
+
+      // Get bot username from the platform's bot token
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (!botToken) {
+        throw new AppError('Telegram bot is not configured on this server', 500);
+      }
+
+      const botResponse = await axios.get(`https://api.telegram.org/bot${botToken}/getMe`);
+      if (!botResponse.data.ok) {
+        throw new AppError('Failed to reach Telegram bot', 500);
+      }
+
+      const botUsername = botResponse.data.result.username;
+      const code = generateSetupCode(req.organizationId!);
+
+      res.json({ code, botUsername });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Poll whether the Telegram group has been linked via /connect command
+router.get(
+  '/telegram/setup/status',
+  requireAdmin,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const connection = await prisma.sourceConnection.findFirst({
+        where: {
+          organizationId: req.organizationId,
+          sourceType: { equals: 'Telegram', mode: 'insensitive' },
+        },
+      });
+
+      res.json({ connected: !!connection });
     } catch (error) {
       next(error);
     }
