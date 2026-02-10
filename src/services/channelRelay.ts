@@ -143,13 +143,31 @@ export async function sendResponseToSource(
       }
       case 'telegram': {
         if (!metadata.telegramChatId) break;
+
+        // Find the most recent customer message with a Telegram message ID so the
+        // reply appears as a reply to the correct message.
+        const latestTelegramMsg = await prisma.ticketMessage.findFirst({
+          where: {
+            ticketId,
+            senderType: 'customer',
+            metadata: { path: ['telegramMessageId'], not: 'null' },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { metadata: true },
+        });
+
+        const replyToTelegramId =
+          (latestTelegramMsg?.metadata as any)?.telegramMessageId ||
+          metadata.telegramMessageId;
+
         await TelegramIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.telegramChatId,
-          responseText
+          responseText,
+          replyToTelegramId
         );
         logger.info(
-          `Response sent to Telegram chat ${metadata.telegramChatId} for ticket ${ticketId}`
+          `Response sent to Telegram chat ${metadata.telegramChatId} (reply to ${replyToTelegramId}) for ticket ${ticketId}`
         );
         return true;
       }

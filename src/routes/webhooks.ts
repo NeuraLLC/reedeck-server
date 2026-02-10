@@ -362,19 +362,31 @@ router.post('/telegram', async (req: Request, res: Response) => {
 
       if (existingTicket) {
         console.log('[TELEGRAM] ✅ Found existing ticket:', existingTicket.id);
-        // Add message to existing ticket conversation
+        // Add message to existing ticket with per-message Telegram message ID
         await prisma.ticketMessage.create({
           data: {
             ticketId: existingTicket.id,
             senderType: 'customer',
             content: message.text,
+            metadata: { telegramMessageId: message.message_id.toString() },
           },
         });
 
-        // Update ticket to re-open if it was in progress
+        // Update ticket metadata with latest message ID so replies target the newest message
+        const existingMeta = (existingTicket.metadata as any) || {};
         await prisma.ticket.update({
           where: { id: existingTicket.id },
-          data: { updatedAt: new Date() },
+          data: {
+            updatedAt: new Date(),
+            metadata: { ...existingMeta, telegramMessageId: message.message_id.toString() },
+          },
+        });
+
+        // Broadcast realtime event for dashboard
+        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+          type: 'broadcast',
+          event: 'ticket_updated',
+          payload: { ticketId: existingTicket.id },
         });
 
         // Re-trigger AI processing for the new message
@@ -413,11 +425,19 @@ router.post('/telegram', async (req: Request, res: Response) => {
               create: {
                 senderType: 'customer',
                 content: message.text,
+                metadata: { telegramMessageId: message.message_id.toString() },
               },
             },
           },
         });
         console.log('[TELEGRAM] ✅ Ticket created:', ticket.id);
+
+        // Broadcast realtime event for dashboard
+        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
+          type: 'broadcast',
+          event: 'ticket_created',
+          payload: { ticketId: ticket.id },
+        });
 
         // Trigger autonomous AI processing if enabled
         const organization = await prisma.organization.findUnique({

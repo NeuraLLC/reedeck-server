@@ -116,24 +116,32 @@ export class TelegramIntegration {
   }
 
   /**
-   * Send message
+   * Send message, optionally as a reply to a specific message
    */
   static async sendMessage(
     credentials: string,
     chatId: number | string,
     text: string,
-    parseMode: 'HTML' | 'Markdown' | 'MarkdownV2' = 'HTML'
-  ): Promise<void> {
+    replyToMessageId?: number | string
+  ): Promise<{ messageId: number }> {
     const decrypted = decryptObject(credentials);
 
-    await axios.post(
+    const payload: any = {
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+    };
+
+    if (replyToMessageId) {
+      payload.reply_parameters = { message_id: Number(replyToMessageId) };
+    }
+
+    const response = await axios.post(
       `https://api.telegram.org/bot${decrypted.bot_token}/sendMessage`,
-      {
-        chat_id: chatId,
-        text,
-        parse_mode: parseMode,
-      }
+      payload
     );
+
+    return { messageId: response.data.result.message_id };
   }
 
   /**
