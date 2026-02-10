@@ -362,7 +362,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
       await TelegramIntegration.sendMessage(
         credentials,
         chatId,
-        'Connected! Messages from this group will now appear in your Reedeck dashboard.'
+        'Connected! Messages from this group will now appear in your Reedeck dashboard.\n\nImportant: Make sure this bot is a group admin so it can read all messages.'
       );
 
       logger.info(`Telegram group ${chatId} linked to organization ${organizationId}`);
