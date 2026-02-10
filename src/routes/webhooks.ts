@@ -354,6 +354,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
 
       // Set webhook (idempotent — safe to call even if already set)
       const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || process.env.FRONTEND_URL?.replace('3000', '4001') || 'http://localhost:4001';
+      logger.info(`Setting Telegram webhook to ${webhookBaseUrl}/api/integrations/webhooks/telegram`);
       await TelegramIntegration.setWebhook(
         credentials,
         `${webhookBaseUrl}/api/integrations/webhooks/telegram`
@@ -362,12 +363,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
       await TelegramIntegration.sendMessage(
         credentials,
         chatId,
-        'Connected! Messages from this group will now appear in your Reedeck dashboard.\n\nImportant: Make sure this bot is a group admin so it can read all messages.'
-      );
-
-      logger.info(`Telegram group ${chatId} linked to organization ${organizationId}`);
-      return res.json({ ok: true });
-    }
+        'Connected! Messages from this group will now appear in your Reedeck dashboard.\n\nImportant: Make sure this bot is a group admin so it can read all messages.'); logger.info(`Telegram group ${chatId} linked to organization ${organizationId}`); return res.json({ ok: true }); }
 
     // ── Regular message — route to the org that owns this chat ──
 
