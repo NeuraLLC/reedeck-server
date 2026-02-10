@@ -400,6 +400,15 @@ router.post(
       }
 
       const botUsername = botResponse.data.result.username;
+
+      // Ensure the webhook is registered with Telegram so it can receive
+      // the /connect command the user is about to send in their group
+      const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
+      await axios.post(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+        url: webhookUrl,
+        allowed_updates: ['message', 'edited_message', 'callback_query'],
+      });
+
       const code = generateSetupCode(req.organizationId!);
 
       res.json({ code, botUsername });
