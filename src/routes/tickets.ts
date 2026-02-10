@@ -5,7 +5,6 @@ import { attachOrganization } from '../middleware/organization';
 import { AuthRequest } from '../types';
 import prisma from '../config/database';
 import { AppError } from '../middleware/errorHandler';
-import { ticketProcessingQueue } from '../config/queue';
 import { sendResponseToSource } from '../services/channelRelay';
 import { supabaseAdmin } from '../config/supabase';
 
@@ -144,48 +143,63 @@ router.post('/:id/mark-read', async (req: AuthRequest, res: Response, next: Next
   }
 });
 
-// Create ticket
+// Create ticket (single or broadcast)
 router.post('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { customerName, customerEmail, subject, priority, message } = req.body;
+    const {
+      customerName,
+      customerEmail,
+      subject,
+      priority,
+      message,
+      sourceId,
+      sourceIds,
+      type,
+    } = req.body;
 
-    const ticket = await prisma.ticket.create({
-      data: {
-        organizationId: req.organizationId!,
-        customerName,
-        customerEmail,
-        subject,
-        priority: priority || 'medium',
-        status: 'open',
-        messages: {
-          create: {
-            senderType: 'customer',
-            content: message,
+    // Broadcast mode: create one ticket per source
+    const sources = sourceIds && sourceIds.length > 0 ? sourceIds : sourceId ? [sourceId] : [null];
+
+    const tickets = [];
+
+    for (const srcId of sources) {
+      const ticket = await prisma.ticket.create({
+        data: {
+          organizationId: req.organizationId!,
+          ...(srcId && { sourceId: srcId }),
+          customerName: customerName || 'Internal',
+          customerEmail: customerEmail || `agent@${req.organizationId}.internal`,
+          subject,
+          priority: priority || 'medium',
+          status: 'open',
+          metadata: srcId
+            ? { source: 'manual', type: type || 'support' }
+            : { type: type || 'support' },
+          messages: {
+            create: {
+              senderType: 'agent',
+              content: message,
+              userId: req.userId,
+            },
           },
         },
-      },
-      include: {
-        messages: true,
-      },
-    });
+        include: {
+          messages: true,
+        },
+      });
 
-    // Check if autonomous AI is enabled for this organization
-    const organization = await prisma.organization.findUnique({
-      where: { id: req.organizationId! },
-      select: { settings: true },
-    });
+      tickets.push(ticket);
 
-    const aiSettings = (organization?.settings as any)?.autonomousAI;
-
-    // Trigger autonomous AI processing if enabled
-    if (aiSettings?.enabled && aiSettings?.autoResponseEnabled) {
-      ticketProcessingQueue.add({
-        ticketId: ticket.id,
-        organizationId: req.organizationId!,
+      // Broadcast realtime event
+      supabaseAdmin.channel(`org:${req.organizationId}`).send({
+        type: 'broadcast',
+        event: 'ticket_created',
+        payload: { ticketId: ticket.id },
       });
     }
 
-    res.status(201).json(ticket);
+    // Return single ticket or array depending on mode
+    res.status(201).json(tickets.length === 1 ? tickets[0] : tickets);
   } catch (error) {
     next(error);
   }
