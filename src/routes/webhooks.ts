@@ -371,6 +371,8 @@ router.post('/telegram', async (req: Request, res: Response) => {
 
     // ── Regular message — route to the org that owns this chat ──
 
+    console.log('[TELEGRAM] Regular message from chatId:', chatId, 'type:', typeof chatId, 'asString:', chatId.toString());
+
     // Find source connection by matching chatId stored in metadata
     const sourceConnection = await prisma.sourceConnection.findFirst({
       where: {
@@ -379,6 +381,18 @@ router.post('/telegram', async (req: Request, res: Response) => {
         metadata: { path: ['chatId'], equals: chatId.toString() },
       },
     });
+
+    console.log('[TELEGRAM] Source connection found:', sourceConnection ? sourceConnection.id : 'NONE');
+    if (sourceConnection) {
+      console.log('[TELEGRAM] Source metadata:', JSON.stringify(sourceConnection.metadata));
+    } else {
+      // Log all Telegram connections to see what's stored
+      const allTelegram = await prisma.sourceConnection.findMany({
+        where: { sourceType: { equals: 'Telegram', mode: 'insensitive' }, isActive: true },
+        select: { id: true, metadata: true },
+      });
+      console.log('[TELEGRAM] All Telegram connections:', JSON.stringify(allTelegram));
+    }
 
     if (!sourceConnection) {
       // No org linked to this chat — ignore
