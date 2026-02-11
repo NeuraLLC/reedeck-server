@@ -474,7 +474,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
           sourceId: sourceConnection.id,
           customerName,
           customerEmail,
-          subject: `Telegram message from ${customerName}`,
+          subject: `Telegram message from ${message.chat.title || customerName}`,
           status: 'open',
           priority: 'medium',
           metadata: {
