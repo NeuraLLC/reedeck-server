@@ -352,7 +352,7 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response, next: NextF
 
     // Send non-internal agent replies back to the source platform (Slack, etc.)
     if (!isInternal) {
-      sendResponseToSource(req.params.id, content).catch((err) => {
+      sendResponseToSource(req.params.id, content, req.userId).catch((err) => {
         console.error('Failed to relay message to source:', err);
       });
     }

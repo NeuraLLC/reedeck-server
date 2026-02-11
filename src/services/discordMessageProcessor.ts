@@ -9,6 +9,7 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { supabaseAdmin } from '../config/supabase';
 import { DiscordIntegration } from './integrations/discord';
+import { isOrganizationMember } from './teamMemberFilter';
 
 interface DiscordMessage {
   id: string;
@@ -75,6 +76,11 @@ export async function processDiscordMessage(
       customerEmail = userInfo.email || `${message.author.id}@discord.local`;
     } catch (err) {
       logger.error('[DISCORD] Failed to fetch user info:', err);
+    }
+
+    // Team member filter: skip ticket creation for internal messages
+    if (await isOrganizationMember(sourceConnection.organizationId, customerEmail)) {
+      return false;
     }
 
     // Get channel name for subject

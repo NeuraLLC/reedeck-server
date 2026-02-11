@@ -14,6 +14,7 @@ import { supabaseAdmin } from '../config/supabase';
 import { processDiscordMessage } from '../services/discordMessageProcessor';
 import { validateSetupCode } from '../services/telegramSetup';
 import { encryptObject } from '../services/encryption';
+import { isOrganizationMember } from '../services/teamMemberFilter';
 
 const router = Router();
 
@@ -132,6 +133,11 @@ router.post('/slack', async (req: Request, res: Response) => {
         console.log('[SLACK] ✅ User info fetched:', { customerName, customerEmail });
       } catch (err) {
         console.error('[SLACK] ❌ Failed to fetch user info:', err);
+      }
+
+      // Team member filter: skip ticket creation for internal messages
+      if (await isOrganizationMember(sourceConnection.organizationId, customerEmail)) {
+        return res.json({ ok: true });
       }
 
       // Get channel name for subject
@@ -400,6 +406,11 @@ router.post('/telegram', async (req: Request, res: Response) => {
     const customerEmail = message.from.username
       ? `${message.from.username}@telegram.local`
       : `user${message.from.id}@telegram.local`;
+
+    // Team member filter: skip ticket creation for internal messages
+    if (await isOrganizationMember(sourceConnection.organizationId, customerEmail, { telegramUsername: message.from.username })) {
+      return res.json({ ok: true });
+    }
 
     // Conversation threading: check for an existing open ticket from the same user in the same chat
     const existingTicket = await prisma.ticket.findFirst({

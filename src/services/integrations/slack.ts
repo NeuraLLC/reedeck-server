@@ -40,6 +40,7 @@ export class SlackIntegration {
       scopes: [
         'channels:read',
         'chat:write',
+        'chat:write.customize',
         'users:read',
         'users:read.email',
         'im:read',
@@ -133,7 +134,8 @@ export class SlackIntegration {
     credentials: string,
     channel: string,
     text: string,
-    threadTs?: string
+    threadTs?: string,
+    branding?: { username?: string; iconUrl?: string }
   ): Promise<{ ts: string }> {
     const decrypted = decryptObject(credentials);
 
@@ -145,6 +147,14 @@ export class SlackIntegration {
     // Reply in thread if threadTs is provided
     if (threadTs) {
       payload.thread_ts = threadTs;
+    }
+
+    // White-label branding: override bot display name and icon
+    if (branding?.username) {
+      payload.username = branding.username;
+    }
+    if (branding?.iconUrl) {
+      payload.icon_url = branding.iconUrl;
     }
 
     const response = await axios.post(

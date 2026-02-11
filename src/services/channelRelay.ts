@@ -16,15 +16,17 @@ import { TelegramIntegration } from './integrations/telegram';
 /**
  * Send a message back to the source platform the ticket originated from.
  * Looks up ticket metadata to determine platform and channel, then delivers the message.
+ * When senderUserId is provided, the reply is branded with the organization name + agent name.
  */
 export async function sendResponseToSource(
   ticketId: string,
-  responseText: string
+  responseText: string,
+  senderUserId?: string | null
 ): Promise<boolean> {
   try {
     const ticket = await prisma.ticket.findUnique({
       where: { id: ticketId },
-      select: { metadata: true, sourceId: true },
+      select: { metadata: true, sourceId: true, organizationId: true },
     });
 
     if (!ticket?.sourceId) return false;
@@ -39,6 +41,43 @@ export async function sendResponseToSource(
     });
 
     if (!sourceConnection) return false;
+
+    // Fetch organization branding
+    let brandName: string | undefined;
+    let brandAvatarUrl: string | undefined;
+    let agentDisplayName: string | undefined;
+
+    if (ticket.organizationId) {
+      const org = await prisma.organization.findUnique({
+        where: { id: ticket.organizationId },
+        select: { name: true, avatarUrl: true },
+      });
+      if (org?.name) {
+        brandName = org.name;
+        brandAvatarUrl = org.avatarUrl || undefined;
+      }
+    }
+
+    // Fetch agent name if a human agent is sending
+    if (senderUserId) {
+      const agent = await prisma.user.findUnique({
+        where: { id: senderUserId },
+        select: { firstName: true, lastName: true },
+      });
+      if (agent?.firstName) {
+        agentDisplayName = agent.lastName
+          ? `${agent.firstName} ${agent.lastName}`
+          : agent.firstName;
+      }
+    }
+
+    // Build the display name: "Acme Corp (via Sarah)" or just "Acme Corp"
+    let displayName: string | undefined;
+    if (brandName) {
+      displayName = agentDisplayName
+        ? `${brandName} (via ${agentDisplayName})`
+        : brandName;
+    }
 
     switch (metadata.source) {
       case 'slack': {
@@ -64,7 +103,8 @@ export async function sendResponseToSource(
           sourceConnection.credentials as string,
           metadata.slackChannelId,
           responseText,
-          threadTs
+          threadTs,
+          displayName ? { username: displayName, iconUrl: brandAvatarUrl } : undefined
         );
         logger.info(
           `Response sent to Slack channel ${metadata.slackChannelId} (thread ${threadTs}) for ticket ${ticketId}`
@@ -130,10 +170,14 @@ export async function sendResponseToSource(
           (latestDiscordMsg?.metadata as any)?.discordMessageId ||
           metadata.discordMessageId;
 
+        const discordText = displayName
+          ? `**${displayName}**\n${responseText}`
+          : responseText;
+
         await DiscordIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.discordChannelId,
-          responseText,
+          discordText,
           replyToMessageId
         );
         logger.info(
@@ -160,10 +204,14 @@ export async function sendResponseToSource(
           (latestTelegramMsg?.metadata as any)?.telegramMessageId ||
           metadata.telegramMessageId;
 
+        const telegramText = displayName
+          ? `<b>${displayName}</b>\n${responseText}`
+          : responseText;
+
         await TelegramIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.telegramChatId,
-          responseText,
+          telegramText,
           replyToTelegramId
         );
         logger.info(

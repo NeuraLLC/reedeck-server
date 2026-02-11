@@ -36,7 +36,7 @@ ticketProcessingQueue.process(async (job: Job<TicketProcessingJob>) => {
       });
 
       // Send the response back to the customer via the original channel (Slack/Gmail/etc.)
-      const sent = await sendResponseToSource(ticketId, result.response);
+      const sent = await sendResponseToSource(ticketId, result.response, null);
 
       if (!sent) {
         logger.warn(`Failed to send auto-response to source for ticket ${ticketId}, but response saved to DB`);
