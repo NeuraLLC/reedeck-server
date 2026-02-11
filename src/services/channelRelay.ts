@@ -99,10 +99,16 @@ export async function sendResponseToSource(
           (latestCustomerMsg?.metadata as any)?.slackMessageTs ||
           metadata.slackMessageTs;
 
+        // Prefix the message text with branding (mrkdwn bold) so it's always
+        // visible even without the chat:write.customize scope.
+        const slackText = displayName
+          ? `*${displayName}*\n${responseText}`
+          : responseText;
+
         await SlackIntegration.sendMessage(
           sourceConnection.credentials as string,
           metadata.slackChannelId,
-          responseText,
+          slackText,
           threadTs,
           displayName ? { username: displayName, iconUrl: brandAvatarUrl } : undefined
         );
