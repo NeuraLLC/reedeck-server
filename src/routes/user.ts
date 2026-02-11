@@ -19,6 +19,9 @@ router.get('/profile', async (req: AuthRequest, res: Response, next: NextFunctio
         firstName: true,
         lastName: true,
         avatarUrl: true,
+        telegramUsername: true,
+        discordId: true,
+        slackId: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,
@@ -38,13 +41,16 @@ router.get('/profile', async (req: AuthRequest, res: Response, next: NextFunctio
 // Update user profile
 router.patch('/profile', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { firstName, lastName } = req.body;
+    const { firstName, lastName, telegramUsername, discordId, slackId } = req.body;
 
     const updated = await prisma.user.update({
       where: { id: req.userId },
       data: {
         ...(firstName !== undefined && { firstName }),
         ...(lastName !== undefined && { lastName }),
+        ...(telegramUsername !== undefined && { telegramUsername }),
+        ...(discordId !== undefined && { discordId }),
+        ...(slackId !== undefined && { slackId }),
       },
       select: {
         id: true,
@@ -52,6 +58,9 @@ router.patch('/profile', async (req: AuthRequest, res: Response, next: NextFunct
         firstName: true,
         lastName: true,
         avatarUrl: true,
+        telegramUsername: true,
+        discordId: true,
+        slackId: true,
         emailVerified: true,
         createdAt: true,
         updatedAt: true,

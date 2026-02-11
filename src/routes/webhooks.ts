@@ -136,7 +136,7 @@ router.post('/slack', async (req: Request, res: Response) => {
       }
 
       // Team member filter: skip ticket creation for internal messages
-      if (await isOrganizationMember(sourceConnection.organizationId, customerEmail)) {
+      if (await isOrganizationMember(sourceConnection.organizationId, customerEmail, { slackId: event.user })) {
         return res.json({ ok: true });
       }
 

@@ -79,7 +79,7 @@ export async function processDiscordMessage(
     }
 
     // Team member filter: skip ticket creation for internal messages
-    if (await isOrganizationMember(sourceConnection.organizationId, customerEmail)) {
+    if (await isOrganizationMember(sourceConnection.organizationId, customerEmail, { discordId: message.author.id })) {
       return false;
     }
 
