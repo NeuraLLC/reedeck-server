@@ -7,7 +7,7 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { AppError } from '../middleware/errorHandler';
 import { sendResponseToSource } from '../services/channelRelay';
-import { supabaseAdmin } from '../config/supabase';
+import { broadcastTicketEvent } from '../services/broadcast';
 
 const router = Router();
 
@@ -173,11 +173,7 @@ router.post('/', async (req: AuthRequest, res: Response, next: NextFunction) => 
     });
 
     // Broadcast realtime event
-    supabaseAdmin.channel(`org:${req.organizationId}`).send({
-      type: 'broadcast',
-      event: 'ticket_created',
-      payload: { ticketId: ticket.id },
-    });
+    await broadcastTicketEvent(req.organizationId!, 'ticket_created', ticket.id);
 
     res.status(201).json(ticket);
   } catch (error) {
@@ -359,11 +355,7 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response, next: NextF
 
     // Broadcast realtime event so other dashboard viewers see the new message
     if (ticket.organizationId) {
-      supabaseAdmin.channel(`org:${ticket.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_updated',
-        payload: { ticketId: req.params.id },
-      });
+      await broadcastTicketEvent(ticket.organizationId, 'ticket_updated', req.params.id);
     }
 
     res.status(201).json(message);

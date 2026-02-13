@@ -2,7 +2,9 @@ import prisma from '../config/database';
 import genAI from '../config/gemini';
 import logger from '../config/logger';
 import { AppError } from '../middleware/errorHandler';
-import { piiRedactor } from './piiRedactor';
+import { RedactionPipeline } from 'openred';
+
+const piiPipeline = new RedactionPipeline();
 import { createAIProvider, AIProvider, AIProviderType } from './aiProviders';
 
 interface AutoResponseResult {
@@ -149,13 +151,13 @@ export class AutonomousAIService {
       let redactionResult = null;
 
       if (complianceSettings.piiRedactionEnabled !== false) {
-        redactionResult = piiRedactor.redact(rawCustomerMessage);
-        customerMessage = redactionResult.redactedText;
+        redactionResult = piiPipeline.redact(rawCustomerMessage);
+        customerMessage = redactionResult.text;
 
-        if (redactionResult.hasRedactions) {
-          logger.info(`PII Redaction applied: ${redactionResult.redactions.length} items redacted`, {
+        if (redactionResult.stats.totalDetected > 0) {
+          logger.info(`PII Redaction applied: ${redactionResult.stats.totalDetected} items redacted`, {
             ticketId,
-            types: redactionResult.redactions.map(r => r.type),
+            types: Object.keys(redactionResult.stats.byType),
           });
         }
       }
@@ -200,8 +202,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
           ticketId,
           provider: aiResponse.provider,
           model: aiResponse.model,
-          piiRedacted: redactionResult?.hasRedactions || false,
-          redactionCount: redactionResult?.redactions.length || 0,
+          piiRedacted: redactionResult ? redactionResult.stats.totalDetected > 0 : false,
+          redactionCount: redactionResult?.stats.totalDetected || 0,
         });
       }
 
@@ -220,8 +222,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
           response: result.solution,
           confidence: result.confidence,
           shouldAssignToAgent: false,
-          piiRedacted: redactionResult?.hasRedactions || false,
-          redactionCount: redactionResult?.redactions.length || 0,
+          piiRedacted: redactionResult ? redactionResult.stats.totalDetected > 0 : false,
+          redactionCount: redactionResult?.stats.totalDetected || 0,
         };
       }
 
@@ -241,8 +243,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
         confidence: result.confidence,
         shouldAssignToAgent: true,
         assignedAgentId: teamMembers[0]?.userId, // Simple round-robin for now
-        piiRedacted: redactionResult?.hasRedactions || false,
-        redactionCount: redactionResult?.redactions.length || 0,
+        piiRedacted: redactionResult ? redactionResult.stats.totalDetected > 0 : false,
+        redactionCount: redactionResult?.stats.totalDetected || 0,
       };
     } catch (error) {
       logger.error('Error processing ticket with autonomous AI:', error);

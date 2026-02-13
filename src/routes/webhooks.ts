@@ -10,11 +10,11 @@ import {
 } from '../services/integrations';
 import prisma from '../config/database';
 import logger from '../config/logger';
-import { supabaseAdmin } from '../config/supabase';
 import { processDiscordMessage } from '../services/discordMessageProcessor';
 import { validateSetupCode } from '../services/telegramSetup';
 import { encryptObject } from '../services/encryption';
 import { isOrganizationMember } from '../services/teamMemberFilter';
+import { broadcastTicketEvent } from '../services/broadcast';
 
 const router = Router();
 
@@ -119,9 +119,10 @@ router.post('/slack', async (req: Request, res: Response) => {
 
       console.log('[SLACK] ✅ Source connection found:', sourceConnection.id);
 
-      // Enrich user info from Slack API (real name, email)
+      // Enrich user info from Slack API (real name, email, avatar)
       let customerName = `Slack User ${event.user}`;
       let customerEmail = `${event.user}@slack.local`;
+      let customerAvatarUrl: string | undefined;
       console.log('[SLACK] Fetching user info for:', event.user);
       try {
         const userInfo = await SlackIntegration.getUserInfo(
@@ -130,6 +131,7 @@ router.post('/slack', async (req: Request, res: Response) => {
         );
         customerName = userInfo.realName;
         customerEmail = userInfo.email || `${event.user}@slack.local`;
+        customerAvatarUrl = userInfo.avatar;
         console.log('[SLACK] ✅ User info fetched:', { customerName, customerEmail });
       } catch (err) {
         console.error('[SLACK] ❌ Failed to fetch user info:', err);
@@ -186,16 +188,13 @@ router.post('/slack', async (req: Request, res: Response) => {
           where: { id: existingTicket.id },
           data: {
             updatedAt: new Date(),
+            ...(customerAvatarUrl && { customerAvatarUrl }),
             metadata: { ...existingMeta, slackMessageTs: event.ts },
           },
         });
 
         // Broadcast realtime event for dashboard
-        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-          type: 'broadcast',
-          event: 'ticket_updated',
-          payload: { ticketId: existingTicket.id },
-        });
+        await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_updated', existingTicket.id);
 
         // Re-trigger AI processing for the new message
         const organization = await prisma.organization.findUnique({
@@ -219,6 +218,7 @@ router.post('/slack', async (req: Request, res: Response) => {
             sourceId: sourceConnection.id,
             customerName,
             customerEmail,
+            ...(customerAvatarUrl && { customerAvatarUrl }),
             subject: `Slack message from #${channelName}`,
             status: 'open',
             priority: 'medium',
@@ -241,11 +241,7 @@ router.post('/slack', async (req: Request, res: Response) => {
         console.log('[SLACK] ✅ Ticket created:', ticket.id);
 
         // Broadcast realtime event for dashboard
-        supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-          type: 'broadcast',
-          event: 'ticket_created',
-          payload: { ticketId: ticket.id },
-        });
+        await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_created', ticket.id);
 
         // Trigger autonomous AI processing if enabled
         const organization = await prisma.organization.findUnique({
@@ -407,6 +403,17 @@ router.post('/telegram', async (req: Request, res: Response) => {
       ? `${message.from.username}@telegram.local`
       : `user${message.from.id}@telegram.local`;
 
+    // Fetch customer profile photo
+    let customerAvatarUrl: string | undefined;
+    try {
+      customerAvatarUrl = await TelegramIntegration.getUserProfilePhotoUrl(
+        sourceConnection.credentials as string,
+        message.from.id
+      );
+    } catch (err) {
+      // Non-critical — continue without avatar
+    }
+
     // Team member filter: skip ticket creation for internal messages
     if (await isOrganizationMember(sourceConnection.organizationId, customerEmail, { telegramUsername: message.from.username })) {
       return res.json({ ok: true });
@@ -443,15 +450,12 @@ router.post('/telegram', async (req: Request, res: Response) => {
         where: { id: existingTicket.id },
         data: {
           updatedAt: new Date(),
+          ...(customerAvatarUrl && { customerAvatarUrl }),
           metadata: { ...existingMeta, telegramMessageId: message.message_id.toString() },
         },
       });
 
-      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_updated',
-        payload: { ticketId: existingTicket.id },
-      });
+      await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_updated', existingTicket.id);
 
       // Re-trigger AI processing
       const organization = await prisma.organization.findUnique({
@@ -474,6 +478,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
           sourceId: sourceConnection.id,
           customerName,
           customerEmail,
+          ...(customerAvatarUrl && { customerAvatarUrl }),
           subject: `Telegram message from ${message.chat.title || customerName}`,
           status: 'open',
           priority: 'medium',
@@ -494,11 +499,7 @@ router.post('/telegram', async (req: Request, res: Response) => {
         },
       });
 
-      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_created',
-        payload: { ticketId: ticket.id },
-      });
+      await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_created', ticket.id);
 
       // Trigger autonomous AI processing if enabled
       const organization = await prisma.organization.findUnique({

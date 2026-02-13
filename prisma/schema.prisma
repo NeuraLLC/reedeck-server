@@ -139,8 +139,9 @@ model Ticket {
   id             String    @id @default(uuid())
   organizationId String    @map("organization_id")
   sourceId       String?   @map("source_id")
-  customerName   String    @map("customer_name")
-  customerEmail  String    @map("customer_email")
+  customerName      String    @map("customer_name")
+  customerEmail     String    @map("customer_email")
+  customerAvatarUrl String?   @map("customer_avatar_url")
   subject        String
   status         String    @default("open")
   priority       String    @default("medium")

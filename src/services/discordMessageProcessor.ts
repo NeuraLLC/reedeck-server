@@ -7,9 +7,9 @@
 
 import prisma from '../config/database';
 import logger from '../config/logger';
-import { supabaseAdmin } from '../config/supabase';
 import { DiscordIntegration } from './integrations/discord';
 import { isOrganizationMember } from './teamMemberFilter';
+import { broadcastTicketEvent } from './broadcast';
 
 interface DiscordMessage {
   id: string;
@@ -19,6 +19,7 @@ interface DiscordMessage {
     id: string;
     username: string;
     bot?: boolean;
+    avatar?: string;
   };
 }
 
@@ -67,6 +68,7 @@ export async function processDiscordMessage(
     // Enrich user info from Discord API
     let customerName = message.author.username;
     let customerEmail = `${message.author.id}@discord.local`;
+    let customerAvatarUrl: string | undefined;
     try {
       const userInfo = await DiscordIntegration.getUserInfo(
         sourceConnection.credentials as string,
@@ -74,8 +76,16 @@ export async function processDiscordMessage(
       );
       customerName = `${userInfo.username}#${userInfo.discriminator}`;
       customerEmail = userInfo.email || `${message.author.id}@discord.local`;
+      // Construct Discord CDN avatar URL from the avatar hash
+      if (userInfo.avatar) {
+        customerAvatarUrl = `https://cdn.discordapp.com/avatars/${message.author.id}/${userInfo.avatar}.png`;
+      }
     } catch (err) {
       logger.error('[DISCORD] Failed to fetch user info:', err);
+      // Fallback: use avatar hash from the webhook payload directly
+      if (message.author.avatar) {
+        customerAvatarUrl = `https://cdn.discordapp.com/avatars/${message.author.id}/${message.author.avatar}.png`;
+      }
     }
 
     // Team member filter: skip ticket creation for internal messages
@@ -129,16 +139,13 @@ export async function processDiscordMessage(
         where: { id: existingTicket.id },
         data: {
           updatedAt: new Date(),
+          ...(customerAvatarUrl && { customerAvatarUrl }),
           metadata: { ...existingMeta, discordMessageId: message.id },
         },
       });
 
       // Broadcast realtime event for dashboard
-      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_updated',
-        payload: { ticketId: existingTicket.id },
-      });
+      await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_updated', existingTicket.id);
 
       // Re-trigger AI processing for the new message
       const organization = await prisma.organization.findUnique({
@@ -163,6 +170,7 @@ export async function processDiscordMessage(
           sourceId: sourceConnection.id,
           customerName,
           customerEmail,
+          ...(customerAvatarUrl && { customerAvatarUrl }),
           subject: `Discord message from #${channelName}`,
           status: 'open',
           priority: 'medium',
@@ -185,11 +193,7 @@ export async function processDiscordMessage(
       logger.info('[DISCORD] Ticket created:', ticket.id);
 
       // Broadcast realtime event for dashboard
-      supabaseAdmin.channel(`org:${sourceConnection.organizationId}`).send({
-        type: 'broadcast',
-        event: 'ticket_created',
-        payload: { ticketId: ticket.id },
-      });
+      await broadcastTicketEvent(sourceConnection.organizationId, 'ticket_created', ticket.id);
 
       // Trigger autonomous AI processing if enabled
       const organization = await prisma.organization.findUnique({

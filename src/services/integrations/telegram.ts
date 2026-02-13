@@ -116,6 +116,38 @@ export class TelegramIntegration {
   }
 
   /**
+   * Get user profile photo URL
+   */
+  static async getUserProfilePhotoUrl(
+    credentials: string,
+    userId: number
+  ): Promise<string | undefined> {
+    const decrypted = decryptObject(credentials);
+
+    const photosRes = await axios.get(
+      `https://api.telegram.org/bot${decrypted.bot_token}/getUserProfilePhotos`,
+      { params: { user_id: userId, limit: 1 } }
+    );
+
+    if (!photosRes.data.ok || photosRes.data.result.total_count === 0) {
+      return undefined;
+    }
+
+    // Get the smallest photo size (sufficient for avatars)
+    const photo = photosRes.data.result.photos[0];
+    const fileId = photo[photo.length - 1].file_id;
+
+    const fileRes = await axios.get(
+      `https://api.telegram.org/bot${decrypted.bot_token}/getFile`,
+      { params: { file_id: fileId } }
+    );
+
+    if (!fileRes.data.ok) return undefined;
+
+    return `https://api.telegram.org/file/bot${decrypted.bot_token}/${fileRes.data.result.file_path}`;
+  }
+
+  /**
    * Send message, optionally as a reply to a specific message
    */
   static async sendMessage(
