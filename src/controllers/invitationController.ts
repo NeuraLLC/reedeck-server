@@ -63,6 +63,7 @@ export const verifyInvitation = async (
     }
 
     res.json({
+      valid: true,
       email: invitation.email,
       organizationName: organization.name,
       role: invitation.role,

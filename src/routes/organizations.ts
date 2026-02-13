@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { authenticate } from '../middleware/auth';
 import { attachOrganization, requireAdmin } from '../middleware/organization';
 import { AuthRequest } from '../types';
@@ -184,7 +185,7 @@ router.post('/members/invite', requireAdmin, async (req: AuthRequest, res: Respo
     }
 
     // Generate invite token
-    const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
+    const token = crypto.randomBytes(32).toString('hex');
 
     const invitation = await prisma.teammateInvitation.create({
       data: {
